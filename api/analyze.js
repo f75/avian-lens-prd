@@ -16,6 +16,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing messages array" });
     }
 
+    // Check API key early — give a clear error instead of a cryptic 401
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured on server. Add it in Vercel → Settings → Environment Variables." });
+    }
+
     // ── eBird: fetch regional species server-side if location has coords ──
     let eBirdSpecies = [];
     const eBirdKey = process.env.EBIRD_API_KEY;

@@ -111,30 +111,37 @@ const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = 
   let resp, data;
 
   // 1. Try Vercel serverless proxy (hides API key, works in production)
+  //    We probe /api/analyze first. A 404 means we're on GitHub Pages (no serverless).
+  //    Any other status = proxy exists but errored → surface the error, never fall through.
+  let proxyExists = false;
   try {
     resp = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages, model, maxTokens, location }),
     });
+    proxyExists = true; // got a real HTTP response — proxy is present
+
     if (resp.ok) {
       data = await resp.json();
       return data.content?.find(c => c.type === "text")?.text || "";
     }
-    if (resp.status !== 404) {
-      // Proxy exists but returned an error — surface it
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData.error || `Server error ${resp.status}`);
+
+    // Proxy returned an error — always surface it (never fall through)
+    const errData = await resp.json().catch(() => ({}));
+    const msg = errData.error || `Server error ${resp.status}`;
+    // Special hint for the common "env var not set" case
+    if (resp.status === 404) {
+      proxyExists = false; // genuine 404 = no proxy route (GitHub Pages)
+    } else {
+      throw new Error(msg);
     }
-    // 404 → no proxy (GitHub Pages), fall through to direct call
   } catch(e) {
-    // Re-throw real errors; ignore network errors (proxy not present)
-    if (e.message && !e.message.includes("fetch") && !e.message.includes("NetworkError")) {
-      throw e;
-    }
+    if (proxyExists) throw e; // proxy returned real error — propagate
+    // else: network error reaching proxy → treat as "no proxy", fall through
   }
 
-  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user key)
+  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user-supplied key)
   if (!apiKey) throw new Error("No API key — enter your Anthropic key (sk-ant-...) in the bar above");
   resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
