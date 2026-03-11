@@ -1,0 +1,1562 @@
+import { useState, useCallback, useRef } from "react";
+
+// ── API KEY (set here for direct browser / GitHub Pages use) ─────────────────
+// On Vercel this is ignored — the key lives in the ANTHROPIC_API_KEY env var.
+// WARNING: do not commit a real key to a public repo. Use Vercel env vars instead.
+const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
+
+const BAKED_EBIRD_KEY = "5vtn996u5cnv";
+
+const FREE_LIMIT = 3;
+const PAID_LIMIT = 20;
+const FREE_MODEL  = "claude-haiku-4-5-20251001";
+const PAID_MODEL  = "claude-haiku-4-5-20251001"; // using Haiku for both tiers to minimize cost
+
+const SOCIAL = [
+  { id:"google",    name:"Google Photos", icon:"🔵" },
+  { id:"instagram", name:"Instagram",     icon:"📸" },
+  { id:"facebook",  name:"Facebook",      icon:"📘" },
+];
+
+// ── EXIF ─────────────────────────────────────────────────────────────────────
+const extractExif = (file) => new Promise(resolve => {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const buf = e.target.result, view = new DataView(buf);
+      if (view.getUint16(0) !== 0xFFD8) { resolve({}); return; }
+      let off = 2;
+      while (off < buf.byteLength - 4) {
+        const marker = view.getUint16(off);
+        if (marker === 0xFFE1) {
+          const hdr = String.fromCharCode(
+            view.getUint8(off+4), view.getUint8(off+5),
+            view.getUint8(off+6), view.getUint8(off+7)
+          );
+          if (hdr === "Exif") {
+            const ts = off+10, le = view.getUint16(ts) === 0x4949;
+            const r16 = o => view.getUint16(ts+o, le);
+            const r32 = o => view.getUint32(ts+o, le);
+            const rStr = (o, n) => { let s=""; for(let i=0;i<n;i++){const b=view.getUint8(ts+o+i);if(!b)break;s+=String.fromCharCode(b);}return s.trim(); };
+            const ifd = r32(4), num = r16(ifd), exif = {};
+            for (let i=0; i<num; i++) {
+              const ep=ifd+2+i*12, tag=r16(ep), type=r16(ep+2), cnt=r32(ep+4);
+              const sz=[0,1,1,2,4,8,1,1,2,4,8,4,8], bLen=(sz[type]||1)*cnt;
+              const vOff = bLen>4 ? r32(ep+8) : (ep+8-ts);
+              if      (tag===0x010F) exif.make    = rStr(vOff, cnt);
+              else if (tag===0x0110) exif.model   = rStr(vOff, cnt);
+              else if (tag===0x0132) exif.dateTime= rStr(vOff, cnt);
+              else if (tag===0x9003) exif.dateTimeOriginal = rStr(vOff, cnt);
+              else if (tag===0x829A) { const n=r32(vOff),d=r32(vOff+4); if(d) exif.exposureTime=`1/${Math.round(d/n)}s`; }
+              else if (tag===0x8827) exif.iso = `ISO ${r16(vOff)}`;
+              else if (tag===0x920A) { const n=r32(vOff),d=r32(vOff+4); if(d) exif.focalLength=`${Math.round(n/d)}mm`; }
+            }
+            resolve(exif); return;
+          }
+        }
+        if ((marker & 0xFF00) !== 0xFF00 || marker === 0xFFDA) break;
+        off += 2 + view.getUint16(off+2);
+      }
+    } catch(_) {}
+    resolve({});
+  };
+  reader.onerror = () => resolve({});
+  reader.readAsArrayBuffer(file);
+});
+
+const readDataUrl = (file) => new Promise((res, rej) => {
+  const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej;
+  r.readAsDataURL(file);
+});
+
+// ── EBIRD ─────────────────────────────────────────────────────────────────────
+// Parse lat/lng from a free-text location string like "25.28°N 80.89°W" or "25.28,-80.89"
+const parseCoords = (loc) => {
+  if (!loc) return null;
+  // "25.28°N 80.89°W" style
+  const dms = loc.match(/([0-9.]+)[°\s]*([NS])[,\s]+([0-9.]+)[°\s]*([EW])/i);
+  if (dms) {
+    let lat = parseFloat(dms[1]), lng = parseFloat(dms[3]);
+    if (/S/i.test(dms[2])) lat = -lat;
+    if (/W/i.test(dms[4])) lng = -lng;
+    return { lat, lng };
+  }
+  // "25.28, -80.89" or "25.28 -80.89"
+  const dec = loc.match(/(-?[0-9]+\.?[0-9]*)[,\s]+(-?[0-9]+\.?[0-9]*)/);
+  if (dec) {
+    const a = parseFloat(dec[1]), b = parseFloat(dec[2]);
+    if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return { lat: a, lng: b };
+  }
+  return null;
+};
+
+// Fetch recently observed species near coords from eBird API (free key)
+const fetchEBirdSpecies = async (coords, eBirdKey) => {
+  if (!eBirdKey || !coords) return [];
+  try {
+    const { lat, lng } = coords;
+    const url = `https://api.ebird.org/v2/data/obs/geo/recent?lat=${lat}&lng=${lng}&dist=50&back=30&maxResults=200`;
+    const resp = await fetch(url, { headers: { "x-ebirdapitoken": eBirdKey } });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    // deduplicate species names
+    const seen = new Set();
+    return data
+      .map(o => o.comName)
+      .filter(n => n && !seen.has(n) && seen.add(n));
+  } catch { return []; }
+};
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+// ── CLAUDE API CALL (shared) ─────────────────────────────────────────────────
+const callClaude = async (messages, model, apiKey, maxTokens = 1000) => {
+  let resp, data;
+
+  // 1. Try Vercel serverless proxy (hides API key, works in production)
+  try {
+    resp = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, model, maxTokens }),
+    });
+    if (resp.ok) {
+      data = await resp.json();
+      return data.content?.find(c => c.type === "text")?.text || "";
+    }
+    if (resp.status !== 404) {
+      // Proxy exists but returned an error — surface it
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `Server error ${resp.status}`);
+    }
+    // 404 → no proxy (GitHub Pages), fall through to direct call
+  } catch(e) {
+    // Re-throw real errors; ignore network errors (proxy not present)
+    if (e.message && !e.message.includes("fetch") && !e.message.includes("NetworkError")) {
+      throw e;
+    }
+  }
+
+  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user key)
+  if (!apiKey) throw new Error("No API key — enter your Anthropic key (sk-ant-...) in the bar above");
+  resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages }),
+  });
+  data = await resp.json();
+  if (!resp.ok) throw new Error(data.error?.message || `Anthropic API error ${resp.status}`);
+  return data.content?.find(c => c.type === "text")?.text || "";
+};
+
+// ── TWO-PASS ANALYSIS ─────────────────────────────────────────────────────────
+// Pass 1 (with image): Deep visual observation — forces systematic field-mark extraction
+// Pass 2 (text only):  Species ID with explicit similar-species elimination + photo scoring
+const analyzeImage = async (b64, mimeType, location, model, apiKey, eBirdSpecies = [], correctionHint = "") => {
+  const fallback = (msg) => ({
+    species:"Unidentifiable", scientificName:"", confidence:"Low",
+    qualityScore:5, qualityGrade:"Fair", summary: msg || "Analysis incomplete",
+    lighting:"", composition:"", focusSharpness:"", behavior:"",
+    strengths:[], improvements:[], interestingFact:"",
+    identificationReasoning:"", _twoPass:true,
+  });
+
+  // ── PASS 1: Systematic visual observation (image required) ──────────────
+  let description;
+  try {
+    description = await callClaude([{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: mimeType, data: b64 } },
+        { type: "text", text:
+`You are a field ornithologist making careful notes about a bird photograph.
+Location: ${location || "not specified"}
+
+Report ONLY what is clearly visible. Use precise field-guide language. Format your response as labeled sections:
+
+SIZE: Compare to a known bird (sparrow / robin / pigeon / crow / duck / goose scale). Note body length and bulk.
+SHAPE: Body profile, neck length, tail length relative to body, wing-tip projection at rest.
+HEAD: Crown color and pattern, cap vs hood, eye color, eye ring (yes/no/color), supercilium (yes/no/color), cheek patch, throat color.
+BILL: Length relative to head (short/medium/long), shape (straight/downcurved/hooked/spatulate/conical/slender), color, thickness.
+BREAST & BELLY: Exact colors, any streaking, spotting, barring, or clean unstreaked.
+BACK & WINGS: Upperpart colors, wing bar count and color, tertial edges, primary projection.
+TAIL: Color, pattern, shape (forked/square/rounded/graduated), any white outer feathers.
+LEGS: Color, length (short/medium/long), any visible toe structure.
+HABITAT: Perch type (wire/branch/reed/ground/rock), background vegetation, water presence.
+BEHAVIOR: Posture, what it is doing (foraging/singing/resting/flying).
+PHOTO QUALITY: Lighting (front/back/side lit, harsh/soft), focus (sharp/soft/motion blur), composition (centered/rule of thirds/clutter), background (clean/busy).` }
+      ]
+    }], model, apiKey, 700);
+  } catch(e) {
+    throw new Error(`Pass 1 failed: ${e.message}`);
+  }
+
+  // ── PASS 2: Species ID with elimination of alternatives ─────────────────
+  let txt;
+  try {
+    txt = await callClaude([{
+      role: "user",
+      content:
+`You are an expert ornithologist identifying a bird from detailed field notes. Use systematic elimination.
+
+FIELD NOTES:
+${description}
+
+Location: ${location || "unknown"}
+${eBirdSpecies.length > 0 ? `
+RECENTLY OBSERVED IN THIS AREA (eBird, last 30 days — strong prior, prioritise these):
+${eBirdSpecies.slice(0, 80).join(", ")}
+` : ""}${correctionHint ? `
+USER CORRECTION HINT: The user believes this may be a "${correctionHint}". Carefully re-examine the field notes with this in mind. Confirm if the field marks match, or explain why they don't.
+` : ""}
+Step 1 — From the field notes${eBirdSpecies.length > 0 ? " and the eBird regional species list" : ""}, list the 3 most likely candidate species.
+Step 2 — Eliminate each one by one using specific field marks.
+Step 3 — Give your final confident ID, noting if it matches the eBird regional list.
+
+Return ONLY valid JSON with no text outside the JSON block:
+{
+  "species": "Common name (or Unidentifiable if <40% confident)",
+  "scientificName": "Genus species (or empty)",
+  "confidence": "High/Medium/Low",
+  "identificationReasoning": "2-3 specific field marks that confirm this ID over similar species",
+  "alternativesConsidered": "species A ruled out because X; species B ruled out because Y",
+  "eBirdMatch": ${"`"}${"`"}${"`"}${eBirdSpecies.length > 0 ? "true if species is in eBird list, false if not (unusual sighting)" : "null"}${"`"}${"`"}${"`"},
+  "qualityScore": <1-10 integer>,
+  "qualityGrade": "Masterpiece/Excellent/Good/Fair/Poor",
+  "summary": "One sentence describing the photo",
+  "lighting": "Lighting quality and direction",
+  "composition": "Framing and subject placement",
+  "focusSharpness": "Sharpness and any motion blur",
+  "behavior": "What the bird is doing",
+  "strengths": ["strength 1", "strength 2"],
+  "improvements": ["improvement tip 1", "improvement tip 2", "improvement tip 3"],
+  "interestingFact": "One specific fascinating fact about this species"
+}`
+    }], model, apiKey, 1000);
+  } catch(e) {
+    // Pass 2 failed but Pass 1 succeeded — return partial result
+    return fallback(`Identification failed: ${e.message}`);
+  }
+
+  // Strip any markdown fences and parse
+  const clean = txt.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+  // Find the JSON object even if there's extra text around it
+  const jsonMatch = clean.match(/\{[\s\S]*\}/);
+  try {
+    const result = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+    result._twoPass = true;
+    return result;
+  } catch {
+    return fallback("Could not parse AI response. Please retry.");
+  }
+};
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const scoreColor = s => s>=9?"#4CAF50":s>=7?"#7CB342":s>=5?"#FFC107":s>=3?"#FF9800":"#F44336";
+const gradeLabel = s => s>=9?"Masterpiece":s>=7?"Excellent":s>=5?"Good":s>=3?"Fair":"Poor";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400;1,600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{background:#060f07;}
+::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-track{background:#0a1a0d;}::-webkit-scrollbar-thumb{background:#2d4a2d;border-radius:2px;}
+.app{min-height:100vh;background:linear-gradient(155deg,#060f07 0%,#0d2010 55%,#060f07 100%);color:#EDE8D8;font-family:'DM Sans',sans-serif;}
+
+/* ── LANDING ── */
+.land{max-width:1000px;margin:0 auto;padding:0 24px;}
+.hero{text-align:center;padding:60px 0 44px;}
+.bird-float{font-size:6rem;display:block;margin-bottom:14px;animation:float 4s ease-in-out infinite;filter:drop-shadow(0 0 36px rgba(80,200,180,.5));}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.app-title{font-family:'Playfair Display',serif;font-size:clamp(2.4rem,7vw,4.4rem);font-weight:700;letter-spacing:-.02em;margin-bottom:9px;}
+.app-title em{color:#C8A84B;font-style:italic;}
+.tagline{font-size:1.1rem;color:#8FAF8A;letter-spacing:.06em;margin-bottom:32px;}
+.pills{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-bottom:50px;}
+.pill{padding:6px 16px;border-radius:20px;background:rgba(200,168,75,.07);border:1px solid rgba(200,168,75,.18);color:#C8A84B;font-size:.85rem;}
+.p-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:64px;}
+@media(max-width:560px){.p-row{grid-template-columns:1fr;}}
+.pc{background:rgba(22,40,22,.7);border:1px solid rgba(100,150,100,.2);border-radius:16px;padding:26px 22px;cursor:pointer;transition:all .28s;backdrop-filter:blur(12px);position:relative;}
+.pc:hover{border-color:rgba(200,168,75,.45);transform:translateY(-4px);box-shadow:0 20px 44px rgba(0,0,0,.4);}
+.pc.hot{border-color:rgba(200,168,75,.38);background:rgba(30,52,28,.8);}
+.pc.hot::after{content:'RECOMMENDED';position:absolute;top:12px;right:12px;background:#C8A84B;color:#060f07;font-size:.55rem;font-weight:700;letter-spacing:.1em;padding:3px 8px;border-radius:20px;}
+.t-name{font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:600;margin-bottom:3px;}
+.t-price{font-size:2.6rem;font-weight:700;color:#C8A84B;line-height:1;margin-bottom:6px;}
+.t-price small{font-size:.78rem;color:#8FAF8A;font-weight:300;}
+.mc-chip{font-size:.63rem;color:rgba(168,200,168,.48);background:rgba(168,200,168,.05);border:1px solid rgba(168,200,168,.1);border-radius:5px;padding:3px 8px;margin-bottom:16px;display:inline-block;}
+.mc-chip.pro{color:rgba(200,168,75,.62);background:rgba(200,168,75,.05);border-color:rgba(200,168,75,.15);}
+.t-feats{list-style:none;margin-bottom:20px;}
+.t-feats li{padding:6px 0;font-size:.95rem;color:#BAD0BA;display:flex;align-items:center;gap:7px;}
+.t-feats li::before{content:'✦';color:#C8A84B;font-size:.58rem;flex-shrink:0;}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:13px 22px;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:1rem;font-weight:600;cursor:pointer;transition:all .2s;border:none;width:100%;}
+.btn-gold{background:#C8A84B;color:#060f07;}.btn-gold:hover{background:#D4B95E;box-shadow:0 5px 18px rgba(200,168,75,.35);}
+.btn-outline{background:rgba(200,168,75,.08);color:#C8A84B;border:1px solid rgba(200,168,75,.26);}.btn-outline:hover{background:rgba(200,168,75,.14);}
+.btn-ghost{background:rgba(255,255,255,.04);color:#8FAF8A;border:1px solid rgba(255,255,255,.07);font-size:.76rem;padding:8px 14px;}.btn-ghost:hover{background:rgba(255,255,255,.08);}
+
+
+/* ── WHO IT HELPS ── */
+.who{margin-bottom:52px;}
+.who-title{font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:600;text-align:center;margin-bottom:6px;}
+.who-sub{text-align:center;font-size:.95rem;color:#8FAF8A;margin-bottom:28px;}
+.who-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;}
+@media(max-width:680px){.who-grid{grid-template-columns:1fr;}}
+.who-card{background:rgba(18,34,18,.75);border:1px solid rgba(100,150,100,.18);border-radius:14px;padding:22px 20px;backdrop-filter:blur(10px);transition:all .25s;}
+.who-card:hover{border-color:rgba(200,168,75,.35);transform:translateY(-3px);box-shadow:0 14px 36px rgba(0,0,0,.35);}
+.who-ico{font-size:2.4rem;margin-bottom:12px;display:block;}
+.who-name{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:600;margin-bottom:4px;color:#EDE8D8;}
+.who-role{font-size:.78rem;color:#C8A84B;font-weight:600;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px;}
+.who-desc{font-size:.88rem;color:#BAD0BA;line-height:1.65;}
+.who-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:12px;}
+.who-tag{font-size:.72rem;padding:3px 9px;border-radius:8px;background:rgba(200,168,75,.07);border:1px solid rgba(200,168,75,.15);color:rgba(200,168,75,.75);}
+
+/* ── API KEY BANNER ── */
+.apibar{background:rgba(200,168,75,.07);border-bottom:1px solid rgba(200,168,75,.18);padding:7px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.apibar-lbl{font-size:.82rem;color:#C8A84B;font-weight:600;white-space:nowrap;}
+.apibar-inp{flex:1;min-width:220px;background:rgba(10,20,10,.6);border:1px solid rgba(200,168,75,.25);border-radius:6px;padding:6px 11px;color:#EDE8D8;font-family:'DM Sans',sans-serif;font-size:.85rem;outline:none;}
+.apibar-inp:focus{border-color:rgba(200,168,75,.5);}
+.apibar-inp::placeholder{color:rgba(200,168,75,.3);}
+.apibar-ok{font-size:.78rem;color:#4CAF50;font-weight:600;white-space:nowrap;}
+.apibar-link{font-size:.75rem;color:rgba(200,168,75,.5);white-space:nowrap;}
+/* ── HEADER ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border-bottom:1px solid rgba(100,150,100,.12);background:rgba(6,15,7,.9);backdrop-filter:blur(16px);position:sticky;top:0;z-index:200;}
+.brand{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;}
+.brand em{color:#C8A84B;font-style:italic;}
+.hdr-r{display:flex;align-items:center;gap:9px;}
+.tc{padding:4px 10px;border-radius:20px;font-size:.68rem;font-weight:600;}
+.tc-free{background:rgba(143,175,138,.07);border:1px solid rgba(143,175,138,.18);color:#8FAF8A;}
+.tc-paid{background:rgba(200,168,75,.08);border:1px solid rgba(200,168,75,.28);color:#C8A84B;}
+.ubar{display:flex;align-items:center;gap:6px;font-size:.68rem;color:#8FAF8A;}
+.utrack{width:55px;height:3px;background:rgba(143,175,138,.16);border-radius:2px;overflow:hidden;}
+.ufill{height:100%;border-radius:2px;transition:width .4s;}
+
+/* ── WORKSPACE ── */
+.ws{display:grid;grid-template-columns:420px 1fr;min-height:calc(100vh - 54px);}
+@media(max-width:820px){.ws{grid-template-columns:1fr;}}
+.lcol{border-right:1px solid rgba(100,150,100,.12);overflow-y:auto;max-height:calc(100vh - 54px);display:flex;flex-direction:column;}
+.rcol{padding:14px 18px;overflow-y:auto;max-height:calc(100vh - 54px);}
+
+/* ── UPLOAD CONFIG PANEL (top of left col) ── */
+.upload-config{padding:16px 18px;border-bottom:2px solid rgba(100,150,100,.18);background:rgba(10,22,10,.6);}
+.uc-title{font-size:.95rem;font-weight:700;color:#C8A84B;letter-spacing:.12em;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+.uc-title::after{content:'';flex:1;height:1px;background:rgba(200,168,75,.18);}
+
+/* Slider rows */
+.sl-row{margin-bottom:14px;}
+.sl-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;}
+.sl-label{font-size:1rem;color:#BAD0BA;font-weight:600;}
+.sl-value{font-size:1rem;font-weight:700;padding:4px 12px;border-radius:10px;min-width:48px;text-align:center;}
+.sl-sub{font-size:.85rem;color:rgba(143,175,138,.65);margin-top:5px;line-height:1.5;}
+
+/* Custom range */
+.rng{width:100%;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;outline:none;cursor:pointer;}
+.rng::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);transition:transform .15s;}
+.rng::-webkit-slider-thumb:hover{transform:scale(1.2);}
+
+/* Quick pick chips */
+.qchips{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap;}
+.qchip{padding:6px 14px;border-radius:10px;font-size:.88rem;font-weight:600;cursor:pointer;transition:all .15s;border:1px solid rgba(100,150,100,.2);background:rgba(22,40,22,.6);color:rgba(174,202,174,.75);}
+.qchip:hover{border-color:rgba(200,168,75,.35);color:#C8A84B;}
+.qchip.on{background:rgba(200,168,75,.14);border-color:rgba(200,168,75,.4);color:#C8A84B;}
+
+/* Score bar preview */
+.score-preview{display:flex;gap:3px;height:6px;border-radius:3px;overflow:hidden;margin-top:8px;}
+.score-seg{flex:1;transition:background .3s;}
+
+/* Upload count info */
+.uc-info{display:flex;gap:8px;margin-top:2px;}
+.uc-stat{flex:1;background:rgba(22,40,22,.7);border:1px solid rgba(100,150,100,.16);border-radius:7px;padding:7px 10px;text-align:center;}
+.uc-stat-num{font-family:'Playfair Display',serif;font-size:1.9rem;font-weight:700;color:#C8A84B;line-height:1;}
+.uc-stat-lbl{font-size:.85rem;color:rgba(143,175,138,.75);margin-top:3px;letter-spacing:.04em;}
+
+/* ── DROP ZONE (below config) ── */
+.drop-area{padding:14px 16px 16px;flex-shrink:0;}
+.drop{border:2px dashed rgba(100,150,100,.25);border-radius:12px;padding:24px 16px;text-align:center;cursor:pointer;transition:all .25s;background:rgba(22,40,22,.2);position:relative;}
+.drop.ov{border-color:#C8A84B;background:rgba(200,168,75,.04);}
+.drop:hover{border-color:rgba(200,168,75,.38);}
+.drop.disabled{opacity:.4;cursor:not-allowed;}
+.drop-ico{font-size:3.2rem;display:block;margin-bottom:12px;opacity:.8;}
+.drop-main{font-size:1.1rem;color:#BAD0BA;font-weight:700;margin-bottom:6px;}
+.drop-hint{font-size:.9rem;color:rgba(143,175,138,.65);line-height:1.6;}
+.drop-badge{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:7px 16px;border-radius:20px;background:rgba(200,168,75,.1);border:1px solid rgba(200,168,75,.25);font-size:.9rem;color:#C8A84B;font-weight:600;}
+
+/* LOCATION */
+.loc-area{padding:0 16px 14px;}
+.flbl{font-size:.9rem;font-weight:700;color:#8FAF8A;letter-spacing:.08em;text-transform:uppercase;margin-bottom:7px;display:block;}
+.finp{width:100%;background:rgba(22,40,22,.5);border:1px solid rgba(100,150,100,.22);border-radius:8px;padding:12px 15px;color:#EDE8D8;font-family:'DM Sans',sans-serif;font-size:1rem;outline:none;transition:border-color .2s;}
+.finp:focus{border-color:rgba(200,168,75,.42);}
+.finp::placeholder{color:rgba(143,175,138,.3);}
+
+/* QUEUED IMAGES */
+.queue-area{padding:0 16px;flex:1;}
+.queue-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
+.queue-lbl{font-size:.92rem;font-weight:700;color:#8FAF8A;letter-spacing:.1em;text-transform:uppercase;}
+.clear-btn{font-size:.88rem;color:rgba(200,168,75,.65);background:none;border:none;cursor:pointer;padding:4px 9px;}
+.clear-btn:hover{color:#C8A84B;}
+
+/* Filter status bar */
+.filter-status{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(200,168,75,.05);border:1px solid rgba(200,168,75,.14);border-radius:7px;margin-bottom:9px;font-size:.67rem;}
+.fs-left{color:rgba(174,202,174,.7);}
+.fs-right{color:#C8A84B;font-weight:600;}
+.filtered-out-note{font-size:.62rem;color:rgba(200,100,60,.7);display:flex;align-items:center;gap:4px;margin-top:5px;}
+
+.tgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;}
+.thumb{position:relative;aspect-ratio:1;border-radius:7px;overflow:hidden;cursor:pointer;border:2px solid transparent;transition:all .2s;background:rgba(18,30,18,.7);}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.thumb.sel{border-color:#C8A84B;}
+.thumb.busy{border-color:#4CAF50;animation:ring 1.2s infinite;}
+.thumb.done-pass{border-color:rgba(76,175,80,.4);}
+.thumb.done-fail{border-color:rgba(200,80,40,.4);opacity:.5;}
+@keyframes ring{0%,100%{box-shadow:0 0 0 0 rgba(76,175,80,.3)}50%{box-shadow:0 0 0 3px rgba(76,175,80,0)}}
+.tov{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;gap:4px;opacity:0;transition:opacity .2s;}
+.thumb:hover .tov{opacity:1;}
+.ticobtn{background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.18);color:#fff;width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:.65rem;display:flex;align-items:center;justify-content:center;}
+.ticobtn.del:hover{background:rgba(192,57,43,.8);}
+.ticobtn:hover{background:rgba(200,168,75,.65);}
+.tbadge{position:absolute;bottom:3px;right:3px;font-size:.56rem;font-weight:700;padding:2px 4px;border-radius:5px;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);}
+.tname{position:absolute;bottom:3px;left:3px;right:22px;font-size:.5rem;padding:2px 3px;border-radius:4px;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#EDE8D8;}
+.tfail-overlay{position:absolute;inset:0;background:rgba(200,60,40,.15);display:flex;align-items:center;justify-content:center;}
+.spinov{position:absolute;inset:0;background:rgba(6,15,7,.82);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;}
+.spin{display:inline-block;border:2px solid rgba(200,168,75,.18);border-top-color:#C8A84B;border-radius:50%;animation:sp .7s linear infinite;}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ANALYZE DOCK */
+.adock{padding:12px 16px 14px;border-top:1px solid rgba(100,150,100,.1);flex-shrink:0;}
+.abtn{width:100%;padding:16px;background:#C8A84B;border:none;border-radius:10px;color:#060f07;font-family:'DM Sans',sans-serif;font-size:1.1rem;font-weight:700;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:9px;}
+.abtn:hover:not(:disabled){background:#D4B95E;transform:translateY(-1px);box-shadow:0 5px 18px rgba(200,168,75,.3);}
+.abtn:disabled{opacity:.38;cursor:not-allowed;}
+.abtn-sub{font-size:.88rem;color:rgba(143,175,138,.65);text-align:center;margin-top:7px;}
+.pbr{width:100%;height:3px;background:rgba(200,168,75,.1);border-radius:2px;overflow:hidden;margin-top:7px;}
+.pbf{height:100%;background:#C8A84B;border-radius:2px;animation:pg 2s ease-in-out infinite;}
+@keyframes pg{0%{width:5%}50%{width:90%}100%{width:5%}}
+.warn{background:rgba(200,80,40,.07);border:1px solid rgba(200,80,40,.22);border-radius:6px;padding:7px 11px;font-size:.75rem;color:#E8956A;display:flex;align-items:center;gap:6px;}
+
+/* ── RIGHT PANEL ── */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:65vh;color:rgba(143,175,138,.32);text-align:center;gap:10px;}
+.empty-ico{font-size:4rem;animation:float 5s ease-in-out infinite;}
+.empty-t{font-family:'Playfair Display',serif;font-size:1.3rem;color:rgba(143,175,138,.42);}
+
+/* IMAGE HEADER */
+.img-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.navbtn{background:rgba(200,168,75,.08);border:1px solid rgba(200,168,75,.2);color:#C8A84B;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.9rem;transition:all .2s;}
+.navbtn:hover{background:rgba(200,168,75,.2);}
+.navbtn:disabled{opacity:.22;cursor:not-allowed;}
+.dots{display:flex;gap:4px;}
+.dot{width:7px;height:7px;border-radius:50%;border:none;cursor:pointer;padding:0;transition:background .2s;}
+
+/* ── DASHBOARD LAYOUT ── */
+/* Row 1: image left + species/score right */
+.dash-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;align-items:start;}
+/* Row 2: two equal columns for analysis */
+.dash-bot{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.dash-col{display:flex;flex-direction:column;gap:9px;}
+
+/* Image panel */
+.img-panel{position:relative;}
+.prev-img{width:100%;height:auto;max-height:min(340px,38vh);object-fit:contain;border-radius:11px;background:rgba(14,26,14,.7);display:block;cursor:zoom-in;}
+
+/* SPECIES HERO */
+.sp-hero{background:linear-gradient(135deg,rgba(28,50,26,.95),rgba(16,30,16,.95));border:1px solid rgba(100,150,100,.22);border-radius:11px;padding:14px 16px;position:relative;overflow:hidden;height:100%;}
+.sp-hero::before{content:'';position:absolute;top:-20px;right:-12px;width:90px;height:90px;background:radial-gradient(circle,rgba(200,168,75,.12),transparent 70%);}
+.sp-eyebrow{font-size:.78rem;font-weight:700;letter-spacing:.14em;color:rgba(143,175,138,.6);text-transform:uppercase;margin-bottom:4px;}
+.sp-name{font-family:'Playfair Display',serif;font-size:clamp(1.2rem,2.5vw,1.7rem);font-weight:700;color:#EDE8D8;line-height:1.1;margin-bottom:2px;}
+.sp-sci{font-family:'Playfair Display',serif;font-style:italic;font-size:.95rem;color:#8FAF8A;margin-bottom:10px;}
+.sp-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+.conf-chip{padding:4px 11px;border-radius:10px;font-size:.8rem;font-weight:700;letter-spacing:.04em;background:rgba(200,168,75,.1);border:1px solid rgba(200,168,75,.26);color:#C8A84B;}
+
+/* SCORE INLINE */
+.score-inline{display:flex;align-items:center;gap:10px;background:rgba(10,20,10,.5);border:1px solid rgba(100,150,100,.18);border-radius:9px;padding:10px 13px;margin-bottom:10px;}
+.score-big{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:700;line-height:1;flex-shrink:0;}
+.score-info{flex:1;}
+.score-grade{font-size:.95rem;font-weight:700;margin-bottom:3px;}
+.score-bar-track{width:100%;height:5px;background:rgba(22,40,22,.8);border-radius:3px;overflow:hidden;}
+.score-bar-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.4,0,.2,1);}
+.score-summary{font-size:.85rem;color:#BAD0BA;margin-top:5px;line-height:1.45;}
+
+/* GATE BADGE */
+.gate-pass{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:.8rem;font-weight:700;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.28);color:#81C784;}
+.gate-fail{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:.8rem;font-weight:700;background:rgba(200,80,40,.1);border:1px solid rgba(200,80,40,.28);color:#E8956A;}
+
+/* ANALYSIS CARDS 2-col inside dash panel */
+.rc-group{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.rc{background:rgba(22,40,22,.55);border:1px solid rgba(100,150,100,.14);border-radius:8px;padding:9px 11px;}
+.rc-k{font-size:.72rem;color:rgba(143,175,138,.72);letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}
+.rc-v{font-size:.9rem;color:#EDE8D8;line-height:1.4;}
+
+/* SECTION HEADERS */
+.st{font-size:.75rem;font-weight:700;color:#8FAF8A;letter-spacing:.13em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin-bottom:7px;}
+.st::after{content:'';flex:1;height:1px;background:rgba(100,150,100,.15);}
+
+/* STRENGTHS */
+.tag-row{display:flex;flex-wrap:wrap;gap:5px;}
+.tag-g{padding:4px 11px;border-radius:10px;font-size:.83rem;background:rgba(76,175,80,.07);border:1px solid rgba(76,175,80,.17);color:#81C784;}
+
+/* TIPS */
+.tips{list-style:none;}
+.tips li{padding:6px 0;border-bottom:1px solid rgba(100,150,100,.09);font-size:.88rem;color:#BAD0BA;display:flex;gap:8px;line-height:1.5;}
+.tips li:last-child{border-bottom:none;}
+.tips li span{color:#C8A84B;flex-shrink:0;}
+
+/* FACT */
+.fact{background:rgba(200,168,75,.04);border:1px solid rgba(200,168,75,.13);border-radius:8px;padding:10px 13px;font-size:.88rem;color:#C8D8A8;line-height:1.55;}
+
+/* META */
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.mc{background:rgba(16,28,16,.6);border:1px solid rgba(100,150,100,.12);border-radius:7px;padding:7px 10px;}
+.mc-k{font-size:.7rem;color:rgba(143,175,138,.7);letter-spacing:.07em;text-transform:uppercase;margin-bottom:3px;}
+.mc-v{font-size:.88rem;color:#EDE8D8;word-break:break-word;line-height:1.35;}
+
+/* SOCIAL DOCK (left panel) */
+.share-dock{padding:0 16px 14px;border-top:1px solid rgba(100,150,100,.1);}
+.share-dock-inner{background:rgba(18,32,18,.7);border:1px solid rgba(100,150,100,.18);border-radius:10px;padding:12px 13px;}
+.share-title{font-size:.92rem;font-weight:700;color:#8FAF8A;letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;}
+.share-count{font-size:.62rem;color:#C8A84B;font-weight:600;background:rgba(200,168,75,.1);padding:2px 7px;border-radius:8px;}
+.share-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px;}
+.soc-tile{display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 8px;border-radius:8px;border:1px solid rgba(100,150,100,.2);background:rgba(22,40,22,.6);color:#BAD0BA;font-family:'DM Sans',sans-serif;font-size:.82rem;font-weight:500;cursor:pointer;transition:all .2s;}
+.soc-tile:hover{border-color:rgba(200,168,75,.4);background:rgba(200,168,75,.07);color:#EDE8D8;transform:translateY(-1px);}
+.soc-tile.lkd{border-color:rgba(76,175,80,.4);background:rgba(76,175,80,.06);color:#81C784;}
+.soc-tile.lkd:hover{border-color:rgba(76,175,80,.55);}
+.soc-tile-ico{font-size:2rem;line-height:1;}
+.soc-tile-lbl{font-size:.88rem;letter-spacing:.02em;}
+.share-note{font-size:.88rem;color:rgba(143,175,138,.6);text-align:center;line-height:1.5;}
+.share-disabled{opacity:.38;pointer-events:none;}
+.share-lock{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px;background:rgba(200,168,75,.05);border:1px dashed rgba(200,168,75,.2);border-radius:8px;font-size:.7rem;color:rgba(200,168,75,.55);cursor:pointer;transition:all .2s;}
+.share-lock:hover{background:rgba(200,168,75,.09);color:#C8A84B;}
+
+/* LIGHTBOX */
+.lb-bg{position:fixed;inset:0;background:rgba(0,0,0,.93);display:flex;align-items:center;justify-content:center;z-index:500;backdrop-filter:blur(8px);padding:16px;}
+.lb-img{max-width:92vw;max-height:86vh;object-fit:contain;border-radius:9px;box-shadow:0 20px 60px rgba(0,0,0,.6);}
+.lb-close{position:absolute;top:16px;right:16px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);color:#fff;width:34px;height:34px;border-radius:50%;cursor:pointer;font-size:.95rem;display:flex;align-items:center;justify-content:center;}
+.lb-close:hover{background:rgba(255,255,255,.2);}
+.lb-info{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.72);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.1);border-radius:22px;padding:6px 18px;font-size:.76rem;color:#EDE8D8;white-space:nowrap;max-width:88vw;overflow:hidden;text-overflow:ellipsis;}
+
+/* MODALS */
+.mbg{position:fixed;inset:0;background:rgba(0,0,0,.76);display:flex;align-items:center;justify-content:center;z-index:999;backdrop-filter:blur(6px);padding:18px;}
+.modal{background:#0e1e0f;border:1px solid rgba(100,150,100,.2);border-radius:15px;padding:26px;max-width:400px;width:100%;position:relative;}
+.mclose{position:absolute;top:11px;right:13px;background:none;border:none;color:#8FAF8A;cursor:pointer;font-size:.95rem;padding:3px;}
+.m-title{font-family:'Playfair Display',serif;font-size:1.35rem;font-weight:600;margin-bottom:6px;}
+.m-desc{font-size:.82rem;color:#8FAF8A;margin-bottom:18px;line-height:1.55;}
+.upbox{background:rgba(200,168,75,.05);border:1px solid rgba(200,168,75,.15);border-radius:8px;padding:13px;margin-bottom:16px;}
+.upbox-price{font-size:1.35rem;font-weight:700;color:#C8A84B;}
+.upbox-detail{font-size:.72rem;color:#8FAF8A;margin-top:3px;}
+.soc-inner{text-align:center;}
+.auth-ico{font-size:3rem;display:block;margin-bottom:12px;}
+.auth-steps{display:flex;justify-content:center;gap:6px;margin-top:12px;}
+.astp{width:6px;height:6px;border-radius:50%;background:rgba(200,168,75,.18);transition:background .4s;}
+.astp.on{background:#C8A84B;}
+.auth-note{margin-top:12px;font-size:.68rem;color:rgba(143,175,138,.42);background:rgba(143,175,138,.04);border:1px solid rgba(143,175,138,.1);border-radius:5px;padding:6px 10px;}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APP
+// ─────────────────────────────────────────────────────────────────────────────
+export default function AvianLens() {
+  const [page,        setPage]        = useState("landing");
+  const [apiKey,      setApiKey]      = useState(() => sessionStorage.getItem("avian_api_key") || BAKED_API_KEY);
+  const [tier,        setTier]        = useState(null);
+  const [sessionUsed, setSessionUsed] = useState(0);
+  const [images,      setImages]      = useState([]);   // all uploaded
+  const [location,    setLocation]    = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [curIdx,      setCurIdx]      = useState(-1);
+  const [selIdx,      setSelIdx]      = useState(0);
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [showSocial,  setShowSocial]  = useState(false);
+  const [socialStep,  setSocialStep]  = useState(null);
+  const [connected,   setConnected]   = useState({});
+  const [dragOver,    setDragOver]    = useState(false);
+  const [lightbox,    setLightbox]    = useState(null);
+
+  const [eBirdKey,    setEBirdKey]    = useState(() => sessionStorage.getItem("avian_ebird_key") || BAKED_EBIRD_KEY);
+  const [eBirdStatus, setEBirdStatus] = useState("idle"); // idle | fetching | ok | error
+  const [eBirdList,   setEBirdList]   = useState([]);     // recently observed species
+  const [correcting,  setCorrecting]  = useState(null);   // { idx, hint }
+
+  // ── PRE-UPLOAD FILTERS ───────────────────────────────────────────────────
+  const [minQuality,    setMinQuality]    = useState(5);   // minimum quality gate (1–10)
+  const [maxPerSpecies, setMaxPerSpecies] = useState(5);   // max images per species shown
+
+  const fileRef = useRef();
+
+  const limit          = tier === "paid" ? PAID_LIMIT : FREE_LIMIT;
+  const model          = tier === "paid" ? PAID_MODEL  : FREE_MODEL;
+  const limitRemaining = Math.max(0, limit - sessionUsed - images.length);
+  const usagePct       = Math.min(100, (sessionUsed + images.length) / limit * 100);
+
+  // ── APPLY POST-ANALYSIS FILTERS ──────────────────────────────────────────
+  // Build display list: enforce quality gate + per-species cap on analyzed images
+  const speciesCountMap = {};
+  const displayImages = images.map(img => {
+    if (!img.analysis) return { ...img, _filtered: false };
+    const score = img.analysis.qualityScore ?? 0;
+    const sp    = img.analysis.species || "Unknown";
+    if (score < minQuality) return { ...img, _filtered: true, _filterReason: `Score ${score} below min ${minQuality}` };
+    speciesCountMap[sp] = (speciesCountMap[sp] || 0) + 1;
+    if (speciesCountMap[sp] > maxPerSpecies) return { ...img, _filtered: true, _filterReason: `>${maxPerSpecies} of species` };
+    return { ...img, _filtered: false };
+  });
+
+  const passCount     = displayImages.filter(i => i.analysis && !i._filtered).length;
+  const filteredCount = displayImages.filter(i => i._filtered).length;
+  const analyzedCount = images.filter(i => i.analysis).length;
+  const uniqueSpecies = new Set(images.filter(i => i.analysis?.species).map(i => i.analysis.species)).size;
+  const selImg        = images[selIdx] || null;
+  const selDisplay    = displayImages[selIdx] || null;
+
+  // ── FILE HANDLING ────────────────────────────────────────────────────────
+  const handleFiles = useCallback(async (files) => {
+    // Only accept image/* files; enforce batch (multiple) only
+    const valid = Array.from(files).filter(f => f.type.startsWith("image/"));
+    if (!valid.length) return;
+    const avail = Math.max(0, limit - sessionUsed - images.length);
+    if (avail <= 0) { setShowUpgrade(true); return; }
+    const toAdd = valid.slice(0, avail);
+
+    const processed = await Promise.all(toAdd.map(async file => {
+      const dataUrl = await readDataUrl(file);
+      const exif    = await extractExif(file);
+      return {
+        dataUrl, name: file.name,
+        size: (file.size / 1024).toFixed(1) + "KB",
+        type: file.type,
+        lastMod: new Date(file.lastModified).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }),
+        exif, analysis: null, error: null,
+      };
+    }));
+
+    setImages(prev => {
+      const next = [...prev, ...processed];
+      setSelIdx(prev.length); // jump to first new
+      return next;
+    });
+    if (valid.length > avail) setShowUpgrade(true);
+  }, [limit, sessionUsed, images.length]);
+
+  const onDrop      = useCallback(e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }, [handleFiles]);
+  const onDragOver  = useCallback(e => { e.preventDefault(); setDragOver(true); }, []);
+  const onDragLeave = useCallback(() => setDragOver(false), []);
+
+  const removeImg = idx => {
+    setImages(p => { const n = [...p]; n.splice(idx, 1); return n; });
+    setSelIdx(s => Math.max(0, s > idx ? s - 1 : s));
+  };
+  const clearAll = () => { setImages([]); setSelIdx(0); setSessionUsed(0); };
+
+  // ── ANALYZE ──────────────────────────────────────────────────────────────
+  // Fetch eBird species list once before batch analysis
+  const fetcheBird = async () => {
+    const coords = parseCoords(location);
+    if (!eBirdKey || !coords) return [];
+    setEBirdStatus("fetching");
+    const list = await fetchEBirdSpecies(coords, eBirdKey);
+    setEBirdList(list);
+    setEBirdStatus(list.length > 0 ? "ok" : "error");
+    // persist key
+    try { sessionStorage.setItem("avian_ebird_key", eBirdKey); } catch(_) {}
+    return list;
+  };
+
+  const runAnalysis = async (specificIdx = null) => {
+    if (!images.length || isAnalyzing) return;
+    setIsAnalyzing(true);
+
+    // Fetch eBird regional species once per batch
+    let localeBirdList = eBirdList;
+    if (eBirdKey && parseCoords(location)) {
+      localeBirdList = await fetcheBird();
+    }
+
+    let used = sessionUsed;
+    // Snapshot images NOW to avoid stale-closure bugs in async loop
+    const snapshot = [...images];
+    const indices = specificIdx !== null ? [specificIdx] : snapshot.map((_,i) => i);
+    for (const i of indices) {
+      const img = snapshot[i];
+      if (!img) continue;                                          // guard: index out of bounds
+      if (!img.dataUrl) continue;                                  // guard: dataUrl missing
+      if (specificIdx === null && img.analysis) continue;          // skip already-analyzed
+      if (used >= limit) { setShowUpgrade(true); break; }
+      setCurIdx(i); setSelIdx(i);
+      try {
+        const b64 = img.dataUrl.split(",")[1];
+        if (!b64) throw new Error("Could not read image data — please re-upload");
+        let analysis;
+        try {
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, localeBirdList);
+        } catch(e1) {
+          await new Promise(r => setTimeout(r, 1500));
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, localeBirdList);
+        }
+        setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
+        used++;
+      } catch(e) {
+        const msg = e?.message || "Unknown error — please retry";
+        setImages(prev => { const n = [...prev]; n[i] = { ...n[i], error: msg }; return n; });
+      }
+    }
+    setSessionUsed(used); setCurIdx(-1); setIsAnalyzing(false);
+  };
+
+  // Re-analyze a single image with a user-provided correction hint
+  const runCorrection = async (idx, hint) => {
+    if (isAnalyzing) return;
+    setCorrecting(null);
+    setIsAnalyzing(true);
+    setCurIdx(idx); setSelIdx(idx);
+    try {
+      const img = images[idx];
+      if (!img?.dataUrl) throw new Error("Image data missing — please re-upload");
+      const b64 = img.dataUrl.split(",")[1];
+      if (!b64) throw new Error("Could not read image data");
+      let analysis;
+      try {
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, eBirdList, hint);
+      } catch(e1) {
+        await new Promise(r => setTimeout(r, 1500));
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, eBirdList, hint);
+      }
+      analysis._correctionHint = hint;
+      setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], analysis, error:null }; return n; });
+    } catch(e) {
+      setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], error: e?.message || "Re-analysis failed" }; return n; });
+    }
+    setCurIdx(-1); setIsAnalyzing(false);
+  };
+
+  // ── SOCIAL ───────────────────────────────────────────────────────────────
+  const handleSocialUpload = async (pid) => {
+    const batch = displayImages.filter(i => i.analysis && !i._filtered);
+    if (!batch.length) return;
+    setShowSocial(true);
+    setSocialStep({ platform:pid, step:"auth", count: batch.length });
+    await new Promise(r => setTimeout(r, 2000));
+    for (let i = 0; i < batch.length; i++) {
+      setSocialStep({ platform:pid, step:"uploading", current: i+1, count: batch.length });
+      await new Promise(r => setTimeout(r, 800));
+    }
+    setSocialStep({ platform:pid, step:"done", count: batch.length });
+    setConnected(p => ({ ...p, [pid]:true }));
+    await new Promise(r => setTimeout(r, 1800));
+    setShowSocial(false); setSocialStep(null);
+  };
+
+  // ── SLIDER COLORS ────────────────────────────────────────────────────────
+  const qualityBg = `linear-gradient(90deg, ${scoreColor(minQuality)} ${minQuality*10}%, rgba(100,150,100,.18) ${minQuality*10}%)`;
+  const speciesBg = `linear-gradient(90deg, #C8A84B ${maxPerSpecies*10}%, rgba(100,150,100,.18) ${maxPerSpecies*10}%)`;
+
+  // Score segment preview (10 segs, segs < minQuality are dimmed)
+  const scoreSegs = Array.from({length:10},(_,i)=>({
+    n: i+1,
+    color: i+1 >= minQuality ? scoreColor(i+1) : "rgba(100,150,100,.1)",
+  }));
+
+  // ── RENDER ───────────────────────────────────────────────────────────────
+  return (
+    <>
+      <style>{CSS}</style>
+      <div className="app">
+
+        {/* ════════════ LANDING ════════════ */}
+        {page === "landing" && (
+          <div className="land">
+            <div className="hero">
+              <span className="bird-float" role="img" aria-label="hummingbird">
+                <svg viewBox="0 0 120 120" width="110" height="110" style={{display:"inline-block"}}>
+                  {/* Body */}
+                  <ellipse cx="60" cy="68" rx="22" ry="12" fill="#1A9E7A" opacity="0.95"/>
+                  {/* Iridescent throat */}
+                  <ellipse cx="60" cy="62" rx="10" ry="7" fill="#E8326A"/>
+                  <ellipse cx="60" cy="61" rx="7" ry="5" fill="#FF6B9D" opacity="0.6"/>
+                  {/* Head */}
+                  <circle cx="60" cy="52" r="11" fill="#0F7A5E"/>
+                  {/* Eye */}
+                  <circle cx="64" cy="50" r="3.5" fill="#000"/>
+                  <circle cx="64" cy="50" r="1.5" fill="#fff"/>
+                  <circle cx="65" cy="49" r="0.8" fill="#fff" opacity="0.8"/>
+                  {/* Beak */}
+                  <path d="M71 51 Q95 48 98 47" stroke="#6B4226" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
+                  {/* Tail */}
+                  <path d="M38 70 Q20 85 16 90" stroke="#0D6B4F" strokeWidth="5" fill="none" strokeLinecap="round"/>
+                  <path d="M40 72 Q22 88 20 95" stroke="#0F7A5E" strokeWidth="3" fill="none" strokeLinecap="round"/>
+                  <path d="M42 73 Q28 90 28 97" stroke="#1A9E7A" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
+                  {/* Wing top */}
+                  <ellipse cx="58" cy="58" rx="28" ry="9" fill="#52C4A0" opacity="0.85" transform="rotate(-20 58 58)"/>
+                  {/* Wing shimmer */}
+                  <ellipse cx="55" cy="54" rx="18" ry="5" fill="#90EED8" opacity="0.5" transform="rotate(-22 55 54)"/>
+                  {/* Belly */}
+                  <ellipse cx="58" cy="74" rx="14" ry="7" fill="#C8F0E0" opacity="0.55"/>
+                  {/* Feet */}
+                  <path d="M54 79 Q52 86 50 88" stroke="#3A2A1A" strokeWidth="1.5" fill="none"/>
+                  <path d="M58 80 Q57 87 55 89" stroke="#3A2A1A" strokeWidth="1.5" fill="none"/>
+                  {/* Sparkle dots */}
+                  <circle cx="85" cy="35" r="2.5" fill="#FFD700" opacity="0.8"/>
+                  <circle cx="30" cy="30" r="1.8" fill="#FF6B9D" opacity="0.7"/>
+                  <circle cx="95" cy="60" r="1.5" fill="#52C4A0" opacity="0.6"/>
+                  <circle cx="20" cy="55" r="2" fill="#FFD700" opacity="0.5"/>
+                </svg>
+              </span>
+              <h1 className="app-title">Avian <em>Lens</em></h1>
+              <p className="tagline">AI-Powered Bird Photography Analysis & Species Identification</p>
+              <div className="pills">
+                {["🔬 Species ID","📊 Quality Scoring","📷 EXIF Data","📍 Geo Context","🎚 Smart Filters","🌐 Social Export"].map(f=>(
+                  <span key={f} className="pill">{f}</span>
+                ))}
+              </div>
+            </div>
+            {/* WHO IT HELPS */}
+            <div className="who">
+              <div className="who-title">Built for Every Bird Lover</div>
+              <div className="who-sub">From your first sighting to your thousandth — Avian Lens grows with you</div>
+              <div className="who-grid">
+                <div className="who-card">
+                  <span className="who-ico">🌱</span>
+                  <div className="who-name">Beginner Birders</div>
+                  <div className="who-role">Just starting out</div>
+                  <div className="who-desc">
+                    Not sure what bird you photographed? Our AI instantly identifies species and gives you fascinating facts — turning every mystery bird into a learning moment. No ornithology degree required.
+                  </div>
+                  <div className="who-tags">
+                    <span className="who-tag">Species ID</span>
+                    <span className="who-tag">Fun Facts</span>
+                    <span className="who-tag">Easy to use</span>
+                  </div>
+                </div>
+                <div className="who-card">
+                  <span className="who-ico">📷</span>
+                  <div className="who-name">Photography Enthusiasts</div>
+                  <div className="who-role">Growing their craft</div>
+                  <div className="who-desc">
+                    Get a detailed critique of every shot — lighting, composition, focus, and behavior — with specific tips to improve your technique. Know exactly which photos are share-worthy and why.
+                  </div>
+                  <div className="who-tags">
+                    <span className="who-tag">Quality Scoring</span>
+                    <span className="who-tag">Photographer Tips</span>
+                    <span className="who-tag">EXIF Analysis</span>
+                  </div>
+                </div>
+                <div className="who-card">
+                  <span className="who-ico">🏆</span>
+                  <div className="who-name">Experienced Birders</div>
+                  <div className="who-role">Serious observers</div>
+                  <div className="who-desc">
+                    Batch-analyze field sessions, apply smart quality gates, cap per-species counts, and export your best shots directly to Google Photos, Instagram, and Facebook — all tagged with species data.
+                  </div>
+                  <div className="who-tags">
+                    <span className="who-tag">Batch Analysis</span>
+                    <span className="who-tag">Smart Filters</span>
+                    <span className="who-tag">Social Export</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+                        <div className="p-row">
+              <div className="pc" onClick={()=>{setTier("free");setPage("workspace");}}>
+                <div className="t-name">Explorer</div>
+                <div className="t-price">Free</div>
+                <div className="mc-chip">⚡ claude-haiku-4-5</div>
+                <ul className="t-feats">
+                  <li>{FREE_LIMIT} images per session</li>
+                  <li>Species identification</li>
+                  <li>Quality score 1–10</li>
+                  <li>EXIF metadata extraction</li>
+                  <li>Photographer tips</li>
+                  <li>Pre-upload quality & species filters</li>
+                </ul>
+                <button className="btn btn-outline">Start Free →</button>
+              </div>
+              <div className="pc hot" onClick={()=>{setTier("paid");setPage("workspace");}}>
+                <div className="t-name">Ornithologist Pro</div>
+                <div className="t-price">$10 <small>/mo</small></div>
+                <div className="mc-chip pro">⚡ claude-haiku-4-5</div>
+                <ul className="t-feats">
+                  <li>{PAID_LIMIT} images per batch</li>
+                  <li>Advanced species analysis</li>
+                  <li>Behavior & plumage details</li>
+                  <li>Conservation status</li>
+                  <li>Social media export</li>
+                  <li>Smart quality gate filtering</li>
+                </ul>
+                <button className="btn btn-gold">Upgrade to Pro →</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════ WORKSPACE ════════════ */}
+        {page === "workspace" && (
+          <>
+            {/* Header */}
+            <div className="hdr">
+              <div className="brand" onClick={()=>{setPage("landing");setImages([]);setSessionUsed(0);}}>
+                <span>🐦</span> Avian <em>Lens</em>
+              </div>
+              <div className="hdr-r">
+                <div className="ubar">
+                  <div className="utrack">
+                    <div className="ufill" style={{width:`${usagePct}%`, background:limitRemaining>0?"#4CAF50":"#F44336"}}/>
+                  </div>
+                  <span>{limitRemaining} left</span>
+                </div>
+                <div className={`tc ${tier==="paid"?"tc-paid":"tc-free"}`}>{tier==="paid"?"✦ Pro":"Explorer"}</div>
+                {tier==="free" && (
+                  <button className="btn btn-outline" style={{width:"auto",padding:"4px 11px",fontSize:".67rem"}} onClick={()=>setShowUpgrade(true)}>Upgrade ↑</button>
+                )}
+              </div>
+            </div>
+
+            {/* API key bar — only needed on GitHub Pages, hidden on Vercel */}
+            <div className="apibar">
+              <span className="apibar-lbl">🔑 API Key</span>
+              <input
+                className="apibar-inp"
+                type="password"
+                placeholder="sk-ant-... (required on GitHub Pages)"
+                value={apiKey}
+                onChange={e => {
+                  setApiKey(e.target.value);
+                  sessionStorage.setItem("avian_api_key", e.target.value);
+                }}
+              />
+              {apiKey && <span className="apibar-ok">✓ Key saved for session</span>}
+              <a className="apibar-link" href="https://console.anthropic.com" target="_blank" rel="noreferrer">Get key →</a>
+            </div>
+
+            <div className="ws">
+              {/* ─── LEFT COL ─── */}
+              <div className="lcol">
+
+                {/* ═══ UPLOAD CONFIGURATION PANEL ═══ */}
+                <div className="upload-config">
+                  <div className="uc-title">Upload Filters</div>
+
+                  {/* Quality Gate Slider */}
+                  <div className="sl-row">
+                    <div className="sl-head">
+                      <span className="sl-label">📊 Minimum Quality Gate</span>
+                      <span className="sl-value" style={{background:`${scoreColor(minQuality)}22`, color:scoreColor(minQuality), border:`1px solid ${scoreColor(minQuality)}44`}}>
+                        {minQuality}/10
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={1} max={10} value={minQuality}
+                      className="rng"
+                      style={{background: qualityBg}}
+                      onChange={e => setMinQuality(+e.target.value)}
+                    />
+                    {/* Score segment visual */}
+                    <div style={{display:"flex",gap:2,marginTop:5}}>
+                      {scoreSegs.map(seg => (
+                        <div key={seg.n} style={{
+                          flex:1, height:4, borderRadius:2,
+                          background: seg.color,
+                          opacity: seg.n >= minQuality ? 1 : 0.18,
+                          transition:"all .3s",
+                        }}/>
+                      ))}
+                    </div>
+                    <div className="sl-sub">
+                      Photos scoring below <strong style={{color:scoreColor(minQuality)}}>{minQuality}</strong> ({gradeLabel(minQuality-1)} or lower) will be flagged after analysis
+                    </div>
+                    {/* Quick picks */}
+                    <div className="qchips">
+                      {[3,5,7,8,9].map(n=>(
+                        <button key={n} className={`qchip${minQuality===n?" on":""}`} onClick={()=>setMinQuality(n)}>
+                          {n}+ · {gradeLabel(n)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Species Cap Slider */}
+                  <div className="sl-row" style={{marginBottom:12}}>
+                    <div className="sl-head">
+                      <span className="sl-label">🐦 Max Images per Species</span>
+                      <span className="sl-value" style={{background:"rgba(200,168,75,.12)",color:"#C8A84B",border:"1px solid rgba(200,168,75,.3)"}}>
+                        {maxPerSpecies === 10 ? "∞ All" : `×${maxPerSpecies}`}
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={1} max={10} value={maxPerSpecies}
+                      className="rng"
+                      style={{background: speciesBg}}
+                      onChange={e => setMaxPerSpecies(+e.target.value)}
+                    />
+                    <div className="sl-sub">
+                      Show at most <strong style={{color:"#C8A84B"}}>{maxPerSpecies === 10 ? "unlimited" : maxPerSpecies}</strong> photo{maxPerSpecies!==1?"s":""} per identified species
+                    </div>
+                    <div className="qchips">
+                      {[1,2,3,5].map(n=>(
+                        <button key={n} className={`qchip${maxPerSpecies===n?" on":""}`} onClick={()=>setMaxPerSpecies(n)}>×{n}</button>
+                      ))}
+                      <button className={`qchip${maxPerSpecies===10?" on":""}`} onClick={()=>setMaxPerSpecies(10)}>All</button>
+                    </div>
+                  </div>
+
+                  {/* Stats row */}
+                  {analyzedCount > 0 && (
+                    <div className="uc-info">
+                      <div className="uc-stat">
+                        <div className="uc-stat-num" style={{color:"#4CAF50"}}>{passCount}</div>
+                        <div className="uc-stat-lbl">Pass filter</div>
+                      </div>
+                      <div className="uc-stat">
+                        <div className="uc-stat-num" style={{color:"#F44336"}}>{filteredCount}</div>
+                        <div className="uc-stat-lbl">Filtered out</div>
+                      </div>
+                      <div className="uc-stat">
+                        <div className="uc-stat-num">{uniqueSpecies}</div>
+                        <div className="uc-stat-lbl">Species</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ═══ DROP ZONE (bulk only) ═══ */}
+                <div className="drop-area">
+                  {limitRemaining <= 0 && (
+                    <div className="warn" style={{marginBottom:10}}>⚠️ {tier==="free"?`Session limit (${FREE_LIMIT}) reached`:`Batch limit (${PAID_LIMIT}) reached`}</div>
+                  )}
+                  <div
+                    className={`drop${dragOver?" ov":""}${limitRemaining<=0?" disabled":""}`}
+                    onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
+                    onClick={() => limitRemaining > 0 && fileRef.current?.click()}
+                  >
+                    <span className="drop-ico">🪶</span>
+                    <div className="drop-main">Drop multiple bird photos here</div>
+                    <div className="drop-hint">
+                      Drag & drop a folder or select multiple files<br/>
+                      JPG · PNG · HEIC · WEBP · GIF
+                    </div>
+                    <div className="drop-badge">
+                      📂 Select Multiple Files · {limitRemaining} slot{limitRemaining!==1?"s":""} available
+                    </div>
+                  </div>
+                  {/* multiple is the only way — no single */}
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display:"none" }}
+                    onChange={e => handleFiles(e.target.files)}
+                  />
+                </div>
+
+                {/* Location */}
+                <div className="loc-area">
+                  <label className="flbl">📍 Geographic Location</label>
+                  <input className="finp" placeholder="e.g. Everglades, Florida · 25.28°N 80.89°W"
+                    value={location} onChange={e => setLocation(e.target.value)}/>
+
+                  {/* eBird API key — optional, unlocks regional species context */}
+                  <div style={{marginTop:10}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                      <label className="flbl" style={{margin:0}}>🐦 eBird API Key <span style={{color:"rgba(143,175,138,.45)",fontWeight:400,textTransform:"none",letterSpacing:0}}>(optional — improves accuracy)</span></label>
+                      <a href="https://ebird.org/api/keygen" target="_blank" rel="noreferrer"
+                        style={{fontSize:".6rem",color:"#C8A84B",textDecoration:"none",opacity:.7}}>Get free key ↗</a>
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      <input className="finp" placeholder="Paste your eBird key here…"
+                        type="password"
+                        style={{flex:1,fontSize:".8rem",padding:"8px 11px"}}
+                        value={eBirdKey}
+                        onChange={e => {
+                          setEBirdKey(e.target.value);
+                          setEBirdStatus("idle");
+                          try { sessionStorage.setItem("avian_ebird_key", e.target.value); } catch(_) {}
+                        }}/>
+                    </div>
+                    {/* eBird status indicator */}
+                    {eBirdKey && (
+                      <div style={{marginTop:5,fontSize:".65rem",display:"flex",alignItems:"center",gap:5}}>
+                        {eBirdStatus==="fetching" && <><div className="spin" style={{width:10,height:10,borderTopColor:"#C8A84B"}}/>
+                          <span style={{color:"#8FAF8A"}}>Fetching regional species…</span></>}
+                        {eBirdStatus==="ok" && <span style={{color:"#4CAF50"}}>✓ {eBirdList.length} species loaded for this area</span>}
+                        {eBirdStatus==="error" && <span style={{color:"#E8956A"}}>⚠ No eBird data — check key or add coords to location</span>}
+                        {eBirdStatus==="idle" && parseCoords(location) &&
+                          <span style={{color:"rgba(143,175,138,.45)"}}>Will fetch eBird data when you analyze</span>}
+                        {eBirdStatus==="idle" && !parseCoords(location) &&
+                          <span style={{color:"rgba(143,175,138,.35)"}}>Add lat/lng to location for eBird lookup</span>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ═══ IMAGE QUEUE ═══ */}
+                {images.length > 0 && (
+                  <div className="queue-area">
+                    <div className="queue-hdr">
+                      <span className="queue-lbl">Queue ({images.length})</span>
+                      <button className="clear-btn" onClick={clearAll}>Clear all</button>
+                    </div>
+
+                    {/* Filter live status */}
+                    {analyzedCount > 0 && (
+                      <div className="filter-status">
+                        <span className="fs-left">Quality ≥{minQuality} · Max {maxPerSpecies=== 10?"∞":maxPerSpecies}/species</span>
+                        <span className="fs-right">✓ {passCount} pass</span>
+                      </div>
+                    )}
+
+                    <div className="tgrid">
+                      {displayImages.map((img, idx) => (
+                        <div
+                          key={idx}
+                          className={`thumb${selIdx===idx?" sel":""}${curIdx===idx?" busy":""}${img.analysis&&!img._filtered?" done-pass":""}${img._filtered?" done-fail":""}`}
+                          onClick={() => setSelIdx(idx)}
+                        >
+                          <img src={img.dataUrl} alt={img.name} onError={e=>e.currentTarget.style.display="none"}/>
+
+                          {/* Filtered overlay */}
+                          {img._filtered && (
+                            <div className="tfail-overlay">
+                              <span style={{fontSize:"1rem"}}>⛔</span>
+                            </div>
+                          )}
+
+                          {/* Analyzing spinner */}
+                          {curIdx === idx && (
+                            <div className="spinov">
+                              <div className="spin" style={{width:16,height:16}}/>
+                              <span style={{fontSize:".5rem",color:"#C8A84B"}}>AI</span>
+                            </div>
+                          )}
+
+                          {/* Score + species */}
+                          {img.analysis && (
+                            <>
+                              <div className="tbadge" style={{color: img._filtered?"#E8956A":scoreColor(img.analysis.qualityScore)}}>
+                                {img.analysis.qualityScore}/10
+                              </div>
+                              <div className="tname">{img.analysis.species}</div>
+                            </>
+                          )}
+
+                          {/* Hover controls */}
+                          {!isAnalyzing && (
+                            <div className="tov">
+                              <button className="ticobtn" title="Preview"
+                                onClick={e=>{e.stopPropagation();setLightbox({src:img.dataUrl,name:img.name,species:img.analysis?.species});}}>🔍</button>
+                              <button className="ticobtn del" title="Remove"
+                                onClick={e=>{e.stopPropagation();removeImg(idx);}}>✕</button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ═══ ANALYZE DOCK ═══ */}
+                <div className="adock">
+                  {isAnalyzing && (
+                    <div style={{marginBottom:8}}>
+                      <div style={{fontSize:".67rem",color:"#8FAF8A",marginBottom:4}}>
+                        Analyzing {curIdx+1}/{images.filter(i=>!i.analysis).length} · Haiku 4.5
+                      </div>
+                      <div className="pbr"><div className="pbf"/></div>
+                    </div>
+                  )}
+                  <button className="abtn" onClick={runAnalysis} disabled={images.length===0||isAnalyzing}>
+                    {isAnalyzing
+                      ? <><div className="spin" style={{width:15,height:15,borderTopColor:"#060f07"}}/>Analyzing…</>
+                      : images.some(i=>i.analysis)
+                        ? `⟳ Re-analyze (${images.length})`
+                        : `⟡ Analyze ${images.length > 0 ? images.length+" Images" : "Images"}`}
+                  </button>
+                  <div className="abtn-sub">
+                    {images.length === 0
+                      ? "Upload multiple images above to begin"
+                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · 2-Pass Haiku ⚡`}
+                  </div>
+                </div>
+
+                {/* ═══ SHARE & EXPORT DOCK ═══ */}
+                <div className="share-dock">
+                  <div className="share-dock-inner">
+                    <div className="share-title">
+                      <span>📤 Share & Export</span>
+                      {passCount > 0 && (
+                        <span className="share-count">{passCount} filtered image{passCount!==1?"s":""}</span>
+                      )}
+                    </div>
+
+                    {passCount === 0 ? (
+                      <div className={`share-btns share-disabled`}>
+                        {SOCIAL.map(p=>(
+                          <div key={p.id} className="soc-tile">
+                            <span className="soc-tile-ico">{p.icon}</span>
+                            <span className="soc-tile-lbl">{p.name.split(" ")[0]}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="share-btns">
+                        {SOCIAL.map(p=>(
+                          <button key={p.id} className={`soc-tile${connected[p.id]?" lkd":""}`}
+                            onClick={()=>handleSocialUpload(p.id)}>
+                            <span className="soc-tile-ico">{p.icon}</span>
+                            <span className="soc-tile-lbl">{p.name.split(" ")[0]}{connected[p.id]?" ✓":""}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="share-note">
+                      {passCount === 0
+                        ? "Analyze images first, then upload passing photos"
+                        : `Uploads all ${passCount} photo${passCount!==1?"s":""} passing your quality & species filters`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ─── RIGHT COL ─── */}
+              <div className="rcol">
+                {images.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-ico">🦜</div>
+                    <div className="empty-t">Ready to Analyze</div>
+                    <div style={{fontSize:".95rem",maxWidth:280,lineHeight:1.65,textAlign:"center",color:"rgba(143,175,138,.45)"}}>
+                      Set your quality gate and species limit, then drop multiple bird photos to upload and analyze.
+                    </div>
+                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ claude-haiku-4-5</div>
+                  </div>
+                ) : selImg ? (
+                  <div>
+                    {/* Navigation bar */}
+                    <div className="img-hdr">
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <button className="navbtn" disabled={selIdx===0} onClick={()=>setSelIdx(s=>s-1)}>‹</button>
+                        <div>
+                          <div style={{fontSize:".88rem",color:"#BAD0BA",maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:500}}>{selImg.name}</div>
+                          <div style={{fontSize:".75rem",color:"rgba(143,175,138,.5)"}}>{selImg.size} · {selIdx+1} of {images.length}</div>
+                        </div>
+                        <button className="navbtn" disabled={selIdx===images.length-1} onClick={()=>setSelIdx(s=>s+1)}>›</button>
+                      </div>
+                      {images.length > 1 && (
+                        <div className="dots">
+                          {images.slice(0,12).map((_,i)=>(
+                            <button key={i} className="dot" onClick={()=>setSelIdx(i)}
+                              style={{background:selIdx===i?"#C8A84B":"rgba(143,175,138,.2)"}}/>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── ANALYZING STATE ── */}
+                    {curIdx === selIdx && (
+                      <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
+                        <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with 2-Pass Haiku…</div>
+                        <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>Pass 1: visual description → Pass 2: species ID</div>
+                      </div>
+                    )}
+
+                    {/* ── AWAITING ANALYSIS ── */}
+                    {!selImg.analysis && !selImg.error && curIdx !== selIdx && (
+                      <div style={{textAlign:"center",padding:"60px 20px",color:"rgba(143,175,138,.32)"}}>
+                        <div style={{fontSize:"2.5rem",marginBottom:12}}>🔬</div>
+                        <div style={{fontSize:".95rem"}}>Click "Analyze Images" to begin</div>
+                      </div>
+                    )}
+
+                    {/* ── DASHBOARD RESULTS ── */}
+                    {selImg.analysis && curIdx !== selIdx && (() => {
+                      const a = selImg.analysis;
+                      const disp = selDisplay;
+                      return (
+                        <>
+                          {/* ROW 1: Image left | Species + Score right */}
+                          <div className="dash-top">
+
+                            {/* LEFT: image */}
+                            <div className="img-panel">
+                              <img src={selImg.dataUrl} alt={selImg.name} className="prev-img"
+                                onClick={()=>setLightbox({src:selImg.dataUrl,name:selImg.name,species:a.species})}/>
+                              {/* Metadata strip below image */}
+                              <div className="mgrid" style={{marginTop:8}}>
+                                <div className="mc"><div className="mc-k">📷 Camera</div><div className="mc-v">{selImg.exif?.make||"—"} {selImg.exif?.model||""}</div></div>
+                                <div className="mc"><div className="mc-k">🕐 Taken</div><div className="mc-v">{selImg.exif?.dateTimeOriginal||selImg.exif?.dateTime||"—"}</div></div>
+                                <div className="mc"><div className="mc-k">⚙️ ISO</div><div className="mc-v">{selImg.exif?.iso||"—"}</div></div>
+                                <div className="mc"><div className="mc-k">⏱ Exposure</div><div className="mc-v">{selImg.exif?.exposureTime||"—"}</div></div>
+                                <div className="mc"><div className="mc-k">🔭 Focal</div><div className="mc-v">{selImg.exif?.focalLength||"—"}</div></div>
+                                <div className="mc"><div className="mc-k">📍 Location</div><div className="mc-v">{location||"—"}</div></div>
+                              </div>
+                            </div>
+
+                            {/* RIGHT: species + score */}
+                            <div className="sp-hero">
+                              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
+                                <div className="sp-eyebrow">Species Identified</div>
+                                {a._twoPass && (
+                                  <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.25)",color:"#81C784",letterSpacing:".06em"}}>
+                                    ⚡ 2-PASS AI
+                                  </span>
+                                )}
+                              </div>
+                              <div className="sp-name">{a.species}</div>
+                              {a.scientificName && <div className="sp-sci">{a.scientificName}</div>}
+                              <div className="sp-badges">
+                                <span className="conf-chip">{a.confidence} confidence</span>
+                                {disp?._filtered
+                                  ? <span className="gate-fail">⛔ Filtered</span>
+                                  : <span className="gate-pass">✓ Passes</span>}
+                                {/* eBird regional match badge */}
+                                {a.eBirdMatch === true && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>
+                                    🗺 eBird confirmed
+                                  </span>
+                                )}
+                                {a.eBirdMatch === false && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>
+                                    ⚠ Unusual for area
+                                  </span>
+                                )}
+                                {a._correctionHint && (
+                                  <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>
+                                    ✏ Re-analyzed with hint
+                                  </span>
+                                )}
+                              </div>
+                              {a.identificationReasoning && (
+                                <div style={{marginTop:8,padding:"7px 10px",background:"rgba(200,168,75,.05)",border:"1px solid rgba(200,168,75,.14)",borderRadius:7,fontSize:".75rem",color:"#C8D8A8",lineHeight:1.5}}>
+                                  🔑 <em>{a.identificationReasoning}</em>
+                                </div>
+                              )}
+                              {a.alternativesConsidered && (
+                                <div style={{marginTop:5,padding:"6px 10px",background:"rgba(100,150,100,.04)",border:"1px solid rgba(100,150,100,.12)",borderRadius:7,fontSize:".7rem",color:"rgba(186,208,186,.65)",lineHeight:1.45}}>
+                                  🔀 <em>{a.alternativesConsidered}</em>
+                                </div>
+                              )}
+                              {/* ── WRONG ID? CORRECTION BUTTON ── */}
+                              {correcting?.idx === selIdx ? (
+                                <div style={{marginTop:9,background:"rgba(22,40,22,.8)",border:"1px solid rgba(200,168,75,.28)",borderRadius:8,padding:"10px 12px"}}>
+                                  <div style={{fontSize:".7rem",color:"#C8A84B",fontWeight:600,marginBottom:6}}>What species do you think it is?</div>
+                                  <input
+                                    autoFocus
+                                    className="finp"
+                                    style={{fontSize:".82rem",padding:"7px 10px",marginBottom:8}}
+                                    placeholder="e.g. Black-capped Chickadee…"
+                                    value={correcting.hint}
+                                    onChange={e => setCorrecting(c => ({...c, hint: e.target.value}))}
+                                    onKeyDown={e => {
+                                      if (e.key === "Enter" && correcting.hint.trim()) runCorrection(selIdx, correcting.hint.trim());
+                                      if (e.key === "Escape") setCorrecting(null);
+                                    }}
+                                  />
+                                  <div style={{display:"flex",gap:6}}>
+                                    <button className="abtn" style={{fontSize:".75rem",padding:"7px",flex:1}}
+                                      disabled={!correcting.hint.trim()}
+                                      onClick={() => runCorrection(selIdx, correcting.hint.trim())}>
+                                      ↺ Re-analyze with hint
+                                    </button>
+                                    <button onClick={() => setCorrecting(null)}
+                                      style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#8FAF8A",borderRadius:7,padding:"7px 12px",cursor:"pointer",fontSize:".75rem"}}>
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setCorrecting({ idx: selIdx, hint: "" })}
+                                  style={{marginTop:8,width:"100%",background:"rgba(255,255,255,.03)",border:"1px dashed rgba(143,175,138,.2)",color:"rgba(143,175,138,.55)",borderRadius:7,padding:"6px",cursor:"pointer",fontSize:".7rem",transition:"all .2s"}}
+                                  onMouseEnter={e => e.currentTarget.style.borderColor="rgba(200,168,75,.35)"}
+                                  onMouseLeave={e => e.currentTarget.style.borderColor="rgba(143,175,138,.2)"}
+                                >
+                                  ✏ Wrong species? Correct it →
+                                </button>
+                              )}
+
+                              {/* Score */}
+                              <div className="score-inline">
+                                <div className="score-big" style={{color:scoreColor(a.qualityScore)}}>{a.qualityScore}</div>
+                                <div className="score-info">
+                                  <div className="score-grade" style={{color:scoreColor(a.qualityScore)}}>{a.qualityGrade}</div>
+                                  <div className="score-bar-track">
+                                    <div className="score-bar-fill" style={{width:`${a.qualityScore*10}%`,background:scoreColor(a.qualityScore)}}/>
+                                  </div>
+                                  <div className="score-summary">{a.summary}</div>
+                                </div>
+                              </div>
+
+                              {/* Photo analysis cards 2x2 */}
+                              <div className="st" style={{marginTop:4}}>Photo Analysis</div>
+                              <div className="rc-group">
+                                {a.lighting       && <div className="rc"><div className="rc-k">💡 Lighting</div><div className="rc-v">{a.lighting}</div></div>}
+                                {a.composition    && <div className="rc"><div className="rc-k">🖼 Composition</div><div className="rc-v">{a.composition}</div></div>}
+                                {a.focusSharpness && <div className="rc"><div className="rc-k">🔍 Focus</div><div className="rc-v">{a.focusSharpness}</div></div>}
+                                {a.behavior       && <div className="rc"><div className="rc-k">🐦 Behavior</div><div className="rc-v">{a.behavior}</div></div>}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* ROW 2: Strengths + Fact left | Tips right */}
+                          <div className="dash-bot">
+                            <div className="dash-col">
+                              {a.strengths?.length > 0 && <>
+                                <div className="st">✦ Strengths</div>
+                                <div className="tag-row">{a.strengths.map((s,i)=><span key={i} className="tag-g">✓ {s}</span>)}</div>
+                              </>}
+                              {a.interestingFact && (
+                                <div className="fact">🔬 <strong style={{color:"#C8A84B"}}>Did you know?</strong> {a.interestingFact}</div>
+                              )}
+                            </div>
+                            <div className="dash-col">
+                              {a.improvements?.length > 0 && <>
+                                <div className="st">→ Photographer Tips</div>
+                                <ul className="tips">
+                                  {a.improvements.map((r,i)=><li key={i}><span>→</span>{r}</li>)}
+                                </ul>
+                              </>}
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {selImg.error && (
+                      <div style={{marginTop:12}}>
+                        <div className="warn">⚠️ {selImg.error}</div>
+                        <button className="abtn" style={{marginTop:8,fontSize:".78rem",padding:"9px"}}
+                          onClick={async()=>{
+                            setImages(prev=>{const n=[...prev];n[selIdx]={...n[selIdx],error:null};return n;});
+                            await new Promise(r=>setTimeout(r,50));
+                            runAnalysis();
+                          }}>
+                          ↺ Retry this image
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ════ LIGHTBOX ════ */}
+        {lightbox && (
+          <div className="lb-bg" onClick={()=>setLightbox(null)}>
+            <button className="lb-close" onClick={()=>setLightbox(null)}>✕</button>
+            <img src={lightbox.src} alt={lightbox.name} className="lb-img" onClick={e=>e.stopPropagation()}/>
+            <div className="lb-info">{lightbox.species ? `🐦 ${lightbox.species} · ${lightbox.name}` : lightbox.name}</div>
+          </div>
+        )}
+
+        {/* ════ UPGRADE ════ */}
+        {showUpgrade && (
+          <div className="mbg" onClick={()=>setShowUpgrade(false)}>
+            <div className="modal" onClick={e=>e.stopPropagation()}>
+              <button className="mclose" onClick={()=>setShowUpgrade(false)}>✕</button>
+              <div style={{fontSize:"2.6rem",marginBottom:12}}>🐦</div>
+              <div className="m-title">Upgrade to Pro</div>
+              <div className="m-desc">{tier==="free"?`Free plan allows ${FREE_LIMIT} images. Upgrade for ${PAID_LIMIT} per batch with Claude Sonnet's deeper analysis and social export.`:"Unlock Avian Lens Pro."}</div>
+              <div className="upbox">
+                <div className="upbox-price">$10 <span style={{fontSize:".88rem",fontWeight:400,color:"#8FAF8A"}}>/month</span></div>
+                <div className="upbox-detail">{PAID_LIMIT} images · Haiku 4.5 · Social Export · Advanced Analysis</div>
+              </div>
+              <button className="btn btn-gold" style={{marginBottom:8}} onClick={()=>{setTier("paid");setSessionUsed(0);setImages([]);setShowUpgrade(false);}}>Upgrade Now →</button>
+              <button className="btn btn-ghost" onClick={()=>setShowUpgrade(false)}>Continue free</button>
+            </div>
+          </div>
+        )}
+
+        {/* ════ SOCIAL AUTH ════ */}
+        {showSocial && socialStep && (
+          <div className="mbg">
+            <div className="modal">
+              <div className="soc-inner">
+                {/* Platform icon + name */}
+                <span className="auth-ico">{SOCIAL.find(p=>p.id===socialStep.platform)?.icon}</span>
+
+                {/* ── STEP 1: Sign in / Authorize ── */}
+                {socialStep.step==="auth" && <>
+                  <div className="m-title">Connect to {SOCIAL.find(p=>p.id===socialStep.platform)?.name}</div>
+                  <div className="m-desc" style={{marginBottom:14}}>
+                    Avian Lens would like permission to upload photos on your behalf.
+                  </div>
+
+                  {/* OAuth permission scopes */}
+                  <div style={{background:"rgba(22,40,22,.7)",border:"1px solid rgba(100,150,100,.18)",borderRadius:9,padding:"11px 14px",marginBottom:16,textAlign:"left"}}>
+                    <div style={{fontSize:".62rem",fontWeight:700,color:"rgba(143,175,138,.55)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:9}}>Permissions requested</div>
+                    {[
+                      {ico:"📤", label:"Upload photos & videos"},
+                      {ico:"🏷️", label:"Add captions and tags"},
+                      {ico:"📍", label:"Attach location metadata"},
+                    ].map(s=>(
+                      <div key={s.label} style={{display:"flex",alignItems:"center",gap:9,padding:"5px 0",borderBottom:"1px solid rgba(100,150,100,.08)"}}>
+                        <span style={{fontSize:".9rem"}}>{s.ico}</span>
+                        <span style={{fontSize:".78rem",color:"#BAD0BA"}}>{s.label}</span>
+                        <span style={{marginLeft:"auto",fontSize:".68rem",color:"#4CAF50",fontWeight:600}}>Allow</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Connecting spinner (auto-auth simulation) */}
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:12}}>
+                    <div className="spin" style={{width:16,height:16}}/>
+                    <span style={{fontSize:".76rem",color:"#8FAF8A"}}>Connecting via OAuth 2.0…</span>
+                  </div>
+
+                  <div className="auth-note">
+                    🔒 Secure OAuth 2.0 · No password stored · Revoke anytime in account settings<br/>
+                    <span style={{color:"rgba(200,168,75,.55)"}}>Uploading {socialStep.count} image{socialStep.count!==1?"s":""} after authorization</span>
+                  </div>
+                  <div className="auth-steps">
+                    <div className="astp on"/>
+                    <div className="astp"/>
+                    <div className="astp"/>
+                  </div>
+                </>}
+
+                {/* ── STEP 2: Uploading ── */}
+                {socialStep.step==="uploading" && <>
+                  <div className="m-title">Uploading {socialStep.current} of {socialStep.count}</div>
+                  <div className="m-desc">Transferring filtered photos with species tags & metadata…</div>
+                  <div style={{width:"100%",height:6,background:"rgba(100,150,100,.18)",borderRadius:3,overflow:"hidden",margin:"14px 0 6px"}}>
+                    <div style={{
+                      height:"100%",borderRadius:3,background:"#C8A84B",
+                      transition:"width .5s cubic-bezier(.4,0,.2,1)",
+                      width:`${(socialStep.current/socialStep.count)*100}%`
+                    }}/>
+                  </div>
+                  <div style={{fontSize:".68rem",color:"rgba(143,175,138,.55)",marginBottom:12}}>
+                    {socialStep.current} of {socialStep.count} complete · {Math.round((socialStep.current/socialStep.count)*100)}%
+                  </div>
+                  <div className="auth-steps">
+                    <div className="astp on"/>
+                    <div className="astp on"/>
+                    <div className="astp"/>
+                  </div>
+                </>}
+
+                {/* ── STEP 3: Done ── */}
+                {socialStep.step==="done" && <>
+                  <div style={{fontSize:"2.4rem",marginBottom:10}}>✅</div>
+                  <div className="m-title">All {socialStep.count} Uploaded!</div>
+                  <div className="m-desc">
+                    Your bird photos are now live on <strong style={{color:"#EDE8D8"}}>{SOCIAL.find(p=>p.id===socialStep.platform)?.name}</strong> with species identification tags, quality scores, and location data attached.
+                  </div>
+                  <div style={{background:"rgba(76,175,80,.07)",border:"1px solid rgba(76,175,80,.2)",borderRadius:8,padding:"9px 13px",fontSize:".74rem",color:"#81C784",marginBottom:14}}>
+                    ✓ Connected · Authorized · {socialStep.count} image{socialStep.count!==1?"s":""} published
+                  </div>
+                  <div className="auth-steps">
+                    <div className="astp on"/>
+                    <div className="astp on"/>
+                    <div className="astp on"/>
+                  </div>
+                </>}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
