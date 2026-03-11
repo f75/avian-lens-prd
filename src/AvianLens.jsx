@@ -5,8 +5,6 @@ import { useState, useCallback, useRef } from "react";
 // WARNING: do not commit a real key to a public repo. Use Vercel env vars instead.
 const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
 
-const BAKED_EBIRD_KEY = "5vtn996u5cnv";
-
 const FREE_LIMIT = 3;
 const PAID_LIMIT = 20;
 const FREE_MODEL  = "claude-haiku-4-5-20251001";
@@ -109,7 +107,7 @@ const fetchEBirdSpecies = async (coords, eBirdKey) => {
 
 // ── AI ────────────────────────────────────────────────────────────────────────
 // ── CLAUDE API CALL (shared) ─────────────────────────────────────────────────
-const callClaude = async (messages, model, apiKey, maxTokens = 1000) => {
+const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = "") => {
   let resp, data;
 
   // 1. Try Vercel serverless proxy (hides API key, works in production)
@@ -117,7 +115,7 @@ const callClaude = async (messages, model, apiKey, maxTokens = 1000) => {
     resp = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, model, maxTokens }),
+      body: JSON.stringify({ messages, model, maxTokens, location }),
     });
     if (resp.ok) {
       data = await resp.json();
@@ -190,7 +188,7 @@ HABITAT: Perch type (wire/branch/reed/ground/rock), background vegetation, water
 BEHAVIOR: Posture, what it is doing (foraging/singing/resting/flying).
 PHOTO QUALITY: Lighting (front/back/side lit, harsh/soft), focus (sharp/soft/motion blur), composition (centered/rule of thirds/clutter), background (clean/busy).` }
       ]
-    }], model, apiKey, 700);
+    }], model, apiKey, 700, location);
   } catch(e) {
     throw new Error(`Pass 1 failed: ${e.message}`);
   }
@@ -236,7 +234,7 @@ Return ONLY valid JSON with no text outside the JSON block:
   "improvements": ["improvement tip 1", "improvement tip 2", "improvement tip 3"],
   "interestingFact": "One specific fascinating fact about this species"
 }`
-    }], model, apiKey, 1000);
+    }], model, apiKey, 1000, location);
   } catch(e) {
     // Pass 2 failed but Pass 1 succeeded — return partial result
     return fallback(`Identification failed: ${e.message}`);
@@ -571,9 +569,6 @@ export default function AvianLens() {
   const [dragOver,    setDragOver]    = useState(false);
   const [lightbox,    setLightbox]    = useState(null);
 
-  const [eBirdKey,    setEBirdKey]    = useState(() => sessionStorage.getItem("avian_ebird_key") || BAKED_EBIRD_KEY);
-  const [eBirdStatus, setEBirdStatus] = useState("idle"); // idle | fetching | ok | error
-  const [eBirdList,   setEBirdList]   = useState([]);     // recently observed species
   const [correcting,  setCorrecting]  = useState(null);   // { idx, hint }
 
   // ── PRE-UPLOAD FILTERS ───────────────────────────────────────────────────
@@ -647,28 +642,9 @@ export default function AvianLens() {
   const clearAll = () => { setImages([]); setSelIdx(0); setSessionUsed(0); };
 
   // ── ANALYZE ──────────────────────────────────────────────────────────────
-  // Fetch eBird species list once before batch analysis
-  const fetcheBird = async () => {
-    const coords = parseCoords(location);
-    if (!eBirdKey || !coords) return [];
-    setEBirdStatus("fetching");
-    const list = await fetchEBirdSpecies(coords, eBirdKey);
-    setEBirdList(list);
-    setEBirdStatus(list.length > 0 ? "ok" : "error");
-    // persist key
-    try { sessionStorage.setItem("avian_ebird_key", eBirdKey); } catch(_) {}
-    return list;
-  };
-
   const runAnalysis = async (specificIdx = null) => {
     if (!images.length || isAnalyzing) return;
     setIsAnalyzing(true);
-
-    // Fetch eBird regional species once per batch
-    let localeBirdList = eBirdList;
-    if (eBirdKey && parseCoords(location)) {
-      localeBirdList = await fetcheBird();
-    }
 
     let used = sessionUsed;
     // Snapshot images NOW to avoid stale-closure bugs in async loop
@@ -686,10 +662,10 @@ export default function AvianLens() {
         if (!b64) throw new Error("Could not read image data — please re-upload");
         let analysis;
         try {
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, localeBirdList);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey);
         } catch(e1) {
           await new Promise(r => setTimeout(r, 1500));
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, localeBirdList);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey);
         }
         setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
         used++;
@@ -714,10 +690,10 @@ export default function AvianLens() {
       if (!b64) throw new Error("Could not read image data");
       let analysis;
       try {
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, eBirdList, hint);
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint);
       } catch(e1) {
         await new Promise(r => setTimeout(r, 1500));
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, eBirdList, hint);
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint);
       }
       analysis._correctionHint = hint;
       setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], analysis, error:null }; return n; });
@@ -1050,41 +1026,9 @@ export default function AvianLens() {
                 {/* Location */}
                 <div className="loc-area">
                   <label className="flbl">📍 Geographic Location</label>
-                  <input className="finp" placeholder="e.g. Everglades, Florida · 25.28°N 80.89°W"
+                  <input className="finp" placeholder="e.g. Everglades, Florida · 25.28°N 80.89°W  (coords enable eBird lookup)"
                     value={location} onChange={e => setLocation(e.target.value)}/>
 
-                  {/* eBird API key — optional, unlocks regional species context */}
-                  <div style={{marginTop:10}}>
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                      <label className="flbl" style={{margin:0}}>🐦 eBird API Key <span style={{color:"rgba(143,175,138,.45)",fontWeight:400,textTransform:"none",letterSpacing:0}}>(optional — improves accuracy)</span></label>
-                      <a href="https://ebird.org/api/keygen" target="_blank" rel="noreferrer"
-                        style={{fontSize:".6rem",color:"#C8A84B",textDecoration:"none",opacity:.7}}>Get free key ↗</a>
-                    </div>
-                    <div style={{display:"flex",gap:6}}>
-                      <input className="finp" placeholder="Paste your eBird key here…"
-                        type="password"
-                        style={{flex:1,fontSize:".8rem",padding:"8px 11px"}}
-                        value={eBirdKey}
-                        onChange={e => {
-                          setEBirdKey(e.target.value);
-                          setEBirdStatus("idle");
-                          try { sessionStorage.setItem("avian_ebird_key", e.target.value); } catch(_) {}
-                        }}/>
-                    </div>
-                    {/* eBird status indicator */}
-                    {eBirdKey && (
-                      <div style={{marginTop:5,fontSize:".65rem",display:"flex",alignItems:"center",gap:5}}>
-                        {eBirdStatus==="fetching" && <><div className="spin" style={{width:10,height:10,borderTopColor:"#C8A84B"}}/>
-                          <span style={{color:"#8FAF8A"}}>Fetching regional species…</span></>}
-                        {eBirdStatus==="ok" && <span style={{color:"#4CAF50"}}>✓ {eBirdList.length} species loaded for this area</span>}
-                        {eBirdStatus==="error" && <span style={{color:"#E8956A"}}>⚠ No eBird data — check key or add coords to location</span>}
-                        {eBirdStatus==="idle" && parseCoords(location) &&
-                          <span style={{color:"rgba(143,175,138,.45)"}}>Will fetch eBird data when you analyze</span>}
-                        {eBirdStatus==="idle" && !parseCoords(location) &&
-                          <span style={{color:"rgba(143,175,138,.35)"}}>Add lat/lng to location for eBird lookup</span>}
-                      </div>
-                    )}
-                  </div>
                 </div>
 
                 {/* ═══ IMAGE QUEUE ═══ */}
@@ -1162,7 +1106,7 @@ export default function AvianLens() {
                       <div className="pbr"><div className="pbf"/></div>
                     </div>
                   )}
-                  <button className="abtn" onClick={runAnalysis} disabled={images.length===0||isAnalyzing}>
+                  <button className="abtn" onClick={() => runAnalysis()} disabled={images.length===0||isAnalyzing}>
                     {isAnalyzing
                       ? <><div className="spin" style={{width:15,height:15,borderTopColor:"#060f07"}}/>Analyzing…</>
                       : images.some(i=>i.analysis)
@@ -1310,7 +1254,7 @@ export default function AvianLens() {
                                 {/* eBird regional match badge */}
                                 {a.eBirdMatch === true && (
                                   <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>
-                                    🗺 eBird confirmed
+                                    🗺 eBird region match
                                   </span>
                                 )}
                                 {a.eBirdMatch === false && (
