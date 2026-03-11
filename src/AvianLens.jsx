@@ -8,7 +8,7 @@ const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
 const FREE_LIMIT = 3;
 const PAID_LIMIT = 20;
 const FREE_MODEL  = "claude-haiku-4-5-20251001";
-const PAID_MODEL  = "claude-haiku-4-5-20251001"; // using haiku for reliability // Sonnet for Pro tier — better species ID accuracy
+const PAID_MODEL  = "claude-sonnet-4-5-20251001"; // Sonnet for Pro — better species ID accuracy
 
 const SOCIAL = [
   { id:"google",    name:"Google Photos", icon:"🔵" },
@@ -213,7 +213,7 @@ HABITAT: Perch substrate (wire/branch/reed/rock/ground/fence), surrounding veget
 BEHAVIOR: Activity (foraging/singing/preening/alert/flying), posture, wing or tail movements.
 PHOTO QUALITY: Lighting direction (front/side/back-lit), quality (harsh/soft/dappled), focus quality (tack-sharp/slightly soft/motion blur), subject size in frame (small/medium/large fill), background (clean bokeh/busy/cluttered), angle (profile/three-quarter/front/rear).` }
       ]
-    }], model, apiKey, 800, location);
+    }], model, apiKey, 1000, location);
   } catch(e) {
     throw new Error(`Pass 1 failed: ${e.message}`);
   }
@@ -267,10 +267,8 @@ Return ONLY valid JSON — no text outside the JSON:
   "strengths": ["strength 1", "strength 2"],
   "improvements": ["tip 1", "tip 2", "tip 3"]
 }`
-    }], model, apiKey, 800, location);
-    const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
-    const m = clean.match(/\{[\s\S]*\}/);
-    candidatesJson = JSON.parse(m ? m[0] : clean);
+    }], model, apiKey, 1400, location);
+    candidatesJson = parseJSON(raw);
   } catch(e) {
     return fallback(`Candidate generation failed: ${e.message}`);
   }
@@ -332,10 +330,8 @@ Return ONLY valid JSON:
   "overallVerdict": "CONFIRMED|PLAUSIBLE|UNLIKELY|REFUTED",
   "verificationNote": "One honest sentence — if marks mostly match say so; if they don't, say the suggestion is likely wrong"
 }`
-      }], model, apiKey, 700, location);
-      const vc = verifyRaw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
-      const vm = vc.match(/\{[\s\S]*\}/);
-      const vResult = JSON.parse(vm ? vm[0] : vc);
+      }], model, apiKey, 900, location);
+      const vResult = parseJSON(verifyRaw);
       const checks = vResult.diagnosticChecks?.map(c =>
         `  • ${c.mark}: expected "${c.expected}" → observed "${c.observed}" [${c.verdict}]`
       ).join("\n") || "";
@@ -387,7 +383,7 @@ Return ONLY valid JSON:
   "eBirdNote": "One sentence on how eBird data affected the final ID",
   "interestingFact": "One fascinating fact about this species"
 }`
-    }], model, apiKey, 700, location);
+    }], model, apiKey, 900, location);
   } catch(e) {
     // Pass 3 failed — fall back to Pass 2 top candidate
     const top = candidates[0] || {};
@@ -405,10 +401,8 @@ Return ONLY valid JSON:
   }
 
   // Parse Pass 3 result
-  const clean3 = txt.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
-  const m3 = clean3.match(/\{[\s\S]*\}/);
   try {
-    const id = JSON.parse(m3 ? m3[0] : clean3);
+    const id = parseJSON(txt);
     return {
       // Pass 3 final ID
       species: id.species,
@@ -441,6 +435,35 @@ Return ONLY valid JSON:
 };
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
+// Robust JSON parser — handles truncated responses by closing open brackets
+const parseJSON = (raw) => {
+  const txt = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
+  const start = txt.indexOf("{");
+  if (start === -1) throw new Error("No JSON object found");
+  let s = txt.slice(start);
+  // Try clean parse first
+  try { return JSON.parse(s); } catch(_) {}
+  // Truncation repair: count unclosed brackets and close them
+  let depth = 0, inStr = false, esc = false;
+  for (const ch of s) {
+    if (esc) { esc = false; continue; }
+    if (ch === "\\" && inStr) { esc = true; continue; }
+    if (ch === '"' && !esc) { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{" || ch === "[") depth++;
+    if (ch === "}" || ch === "]") depth--;
+  }
+  // Strip trailing incomplete token (comma, colon, partial string)
+  let repaired = s.replace(/,\s*$/, "").replace(/:\s*$/, ": null").replace(/"[^"]*$/, '"..."');
+  while (depth > 0) { repaired += depth % 2 === 0 ? "}" : "]"; depth--; }
+  try { return JSON.parse(repaired); } catch(e2) {
+    // Last resort: extract what we can with a regex
+    const m = s.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+    throw e2;
+  }
+};
+
 const scoreColor = s => s>=9?"#4CAF50":s>=7?"#7CB342":s>=5?"#FFC107":s>=3?"#FF9800":"#F44336";
 const gradeLabel = s => s>=9?"Masterpiece":s>=7?"Excellent":s>=5?"Good":s>=3?"Fair":"Poor";
 
