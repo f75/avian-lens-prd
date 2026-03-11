@@ -8,7 +8,7 @@ const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
 const FREE_LIMIT = 3;
 const PAID_LIMIT = 20;
 const FREE_MODEL  = "claude-haiku-4-5-20251001";
-const PAID_MODEL  = "claude-sonnet-4-5-20251001"; // Sonnet for Pro tier — better species ID accuracy
+const PAID_MODEL  = "claude-haiku-4-5-20251001"; // using haiku for reliability // Sonnet for Pro tier — better species ID accuracy
 
 const SOCIAL = [
   { id:"google",    name:"Google Photos", icon:"🔵" },
