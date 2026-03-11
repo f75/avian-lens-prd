@@ -1,8 +1,8 @@
 {
   "framework": null,
-  "buildCommand": "echo 'no build needed'",
+  "buildCommand": null,
   "outputDirectory": "dist",
-  "installCommand": "echo 'no install needed'",
+  "installCommand": null,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
