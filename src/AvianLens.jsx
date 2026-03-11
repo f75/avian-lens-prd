@@ -277,14 +277,78 @@ Return ONLY valid JSON — no text outside the JSON:
   const candidateNames = candidates.map(c => c.species).filter(Boolean);
 
   // ── EBIRD CHECK: Occurrence counts for each candidate ───────────────────
-  progress("eBird — Checking regional occurrence data…");
-  let eBirdData = null;
   const coords = parseCoords(location);
+  let eBirdData = null;
+
   if (coords && candidateNames.length) {
+    progress("eBird — Checking regional occurrence data…");
     eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames);
   }
 
-  // Build a human-readable eBird summary for Pass 3
+  // ── GEO PATH: When location + eBird data available, pick the best eBird-confirmed candidate ──
+  // If geo is provided and eBird has data, use it directly — no need for Pass 3 arbitration.
+  if (coords && eBirdData?.scores && !correctionHint) {
+    // Score each candidate: observed candidates ranked by obsCount, unobserved pushed to bottom
+    const scored = candidates.map(c => {
+      const s = eBirdData.scores[c.species];
+      const obsCount = (s?.observed && s.obsCount) ? s.obsCount : 0;
+      return { ...c, obsCount, observed: obsCount > 0 };
+    });
+
+    // Find best: first prefer observed candidates (highest obsCount), then fall back to visual-only top
+    const observed = scored.filter(c => c.observed).sort((a,b) => b.obsCount - a.obsCount);
+    const best = observed.length > 0 ? observed[0] : scored[0];
+    const bestScore = eBirdData.scores[best.species];
+
+    const rarity = !best.observed ? "not recently recorded"
+      : best.obsCount > 20 ? "very common in area"
+      : best.obsCount > 4  ? "regularly seen in area"
+      : "occasionally seen in area";
+
+    progress("eBird — Species confirmed from regional data…");
+
+    // Build quality/photo fields from Pass 2
+    const photoFields = {
+      qualityScore: candidatesJson.qualityScore,
+      qualityGrade: candidatesJson.qualityGrade,
+      summary: candidatesJson.summary,
+      lighting: candidatesJson.lighting,
+      composition: candidatesJson.composition,
+      focusSharpness: candidatesJson.focusSharpness,
+      behavior: candidatesJson.behavior,
+      strengths: candidatesJson.strengths,
+      improvements: candidatesJson.improvements,
+    };
+
+    // Generate interesting fact via a lightweight call (still uses the model)
+    let interestingFact = "";
+    try {
+      const factRaw = await callClaude([{
+        role: "user",
+        content: `Give ONE short, fascinating fact about the ${best.species} (under 25 words). Return only the fact, no preamble.`
+      }], model, apiKey, 80, "");
+      interestingFact = factRaw.trim().replace(/^"|"$/g,"");
+    } catch(_) {}
+
+    return {
+      species: best.species,
+      scientificName: best.scientificName || "",
+      confidence: best.observed ? (best.obsCount > 10 ? "High" : "Medium") : "Low",
+      identificationReasoning: `Visual field marks match ${best.species}; ${best.observed ? `confirmed present in area (${best.obsCount} eBird records in last 30 days)` : "not recently recorded nearby — visual ID only"}.`,
+      alternativesConsidered: scored.slice(1).map(c => `${c.species} (${c.observed?c.obsCount+" records":"absent"})`).join(", ") || "none",
+      eBirdVerdict: best.observed ? "confirmed" : "no_data",
+      eBirdNote: `${best.species} is ${rarity}; ${eBirdData.totalSpecies} species reported within 75km in last 30 days.`,
+      userSuggestionVerdict: undefined,
+      interestingFact,
+      ...photoFields,
+      _threePass: true,
+      _eBirdPrimary: true,   // flag that eBird drove this ID
+      _candidates: candidates,
+      _eBirdData: eBirdData,
+    };
+  }
+
+  // Build a human-readable eBird summary for Pass 3 (no-geo path)
   let eBirdSummary = "";
   if (eBirdData?.scores) {
     const lines = candidateNames.map(name => {
@@ -1313,7 +1377,7 @@ export default function AvianLens() {
                   {isAnalyzing && (
                     <div style={{marginBottom:8}}>
                       <div style={{fontSize:".67rem",color:"#8FAF8A",marginBottom:4}}>
-                        {progressMsg || `Analyzing image ${curIdx+1} of ${images.filter(i=>!i.analysis).length}`} · {tier==="paid"?"Haiku 4.5":"Haiku 4.5 ⚡"}
+                        {progressMsg || `Analyzing image ${curIdx+1} of ${images.filter(i=>!i.analysis).length}`} · {tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}
                       </div>
                       <div className="pbr"><div className="pbf"/></div>
                     </div>
@@ -1328,7 +1392,7 @@ export default function AvianLens() {
                   <div className="abtn-sub">
                     {images.length === 0
                       ? "Upload multiple images above to begin"
-                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.5 🚀":"Haiku 4.5 ⚡"}`}
+                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}`}
                   </div>
                 </div>
 
@@ -1409,7 +1473,7 @@ export default function AvianLens() {
                     {curIdx === selIdx && (
                       <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
                         <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
-                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Sonnet 4.5 🚀":"Haiku 4.5 ⚡"}…</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
                         <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>{progressMsg || "Pass 1 → eBird → Pass 3…"}</div>
                       </div>
                     )}
@@ -1452,7 +1516,7 @@ export default function AvianLens() {
                                 <div className="sp-eyebrow">Species Identified</div>
                                 {a._threePass && (
                                   <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.25)",color:"#81C784",letterSpacing:".06em"}}>
-                                    🔬 3-PASS + eBird
+                                    {a._eBirdPrimary ? "📍 eBird + Vision" : "🔬 3-PASS + eBird"}
                                   </span>
                                 )}
                               </div>
@@ -1464,7 +1528,12 @@ export default function AvianLens() {
                                   ? <span className="gate-fail">⛔ Filtered</span>
                                   : <span className="gate-pass">✓ Passes</span>}
                                 {/* eBird verdict badge */}
-                                {a.eBirdVerdict === "confirmed" && (
+                                {a._eBirdPrimary && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.18)",border:"1px solid rgba(33,150,243,.5)",color:"#42A5F5"}}>
+                                    📍 ID via eBird
+                                  </span>
+                                )}
+                                {!a._eBirdPrimary && a.eBirdVerdict === "confirmed" && (
                                   <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>
                                     🗺 eBird confirmed
                                   </span>
@@ -1653,7 +1722,7 @@ export default function AvianLens() {
               <div className="m-desc">{tier==="free"?`Free plan allows ${FREE_LIMIT} images. Upgrade for ${PAID_LIMIT} per batch with Claude Sonnet's deeper analysis and social export.`:"Unlock Avian Lens Pro."}</div>
               <div className="upbox">
                 <div className="upbox-price">$10 <span style={{fontSize:".88rem",fontWeight:400,color:"#8FAF8A"}}>/month</span></div>
-                <div className="upbox-detail">{PAID_LIMIT} images · Sonnet 4.5 · Social Export · Advanced Analysis</div>
+                <div className="upbox-detail">{PAID_LIMIT} images · Sonnet 4.6 · Social Export · Advanced Analysis</div>
               </div>
               <button className="btn btn-gold" style={{marginBottom:8}} onClick={()=>{setTier("paid");setSessionUsed(0);setImages([]);setShowUpgrade(false);}}>Upgrade Now →</button>
               <button className="btn btn-ghost" onClick={()=>setShowUpgrade(false)}>Continue free</button>
