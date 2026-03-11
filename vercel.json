@@ -5,6 +5,7 @@
   "installCommand": null,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/((?!api/|assets/|vite\\.svg).*)", "destination": "/index.html" }
+    { "source": "/vite.svg", "destination": "/vite.svg" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
