@@ -444,7 +444,7 @@ Return ONLY valid JSON:
   "alternativesConsidered": "How you weighed all candidates including user suggestion",
   "userSuggestionVerdict": "accepted|rejected|insufficient_evidence",
   "eBirdVerdict": "confirmed|unusual|overridden|no_data",
-  "eBirdNote": "One sentence on how eBird data affected the final ID",
+  "eBirdNote": "One sentence on eBird data — ONLY if eBird data was actually provided above. If no eBird data, return empty string \"\"",
   "interestingFact": "One fascinating fact about this species"
 }`
     }], model, apiKey, 900, location);
@@ -1609,9 +1609,15 @@ export default function AvianLens() {
                                   🔀 <em>{a.alternativesConsidered}</em>
                                 </div>
                               )}
-                              {a.eBirdNote && (
+                              {a.eBirdNote && !a.eBirdNote.toLowerCase().includes("no ebird") && !a.eBirdNote.toLowerCase().includes("not available") && !a.eBirdNote.toLowerCase().includes("rests entirely") && !a.eBirdNote.toLowerCase().includes("field marks alone") && !a.eBirdNote.toLowerCase().includes("no frequency") && (
                                 <div style={{marginTop:5,padding:"6px 10px",background:"rgba(33,150,243,.04)",border:"1px solid rgba(33,150,243,.14)",borderRadius:7,fontSize:".7rem",color:"rgba(100,181,246,.8)",lineHeight:1.45,display:"flex",gap:6,alignItems:"flex-start"}}>
                                   <span>🗺</span><span>{a.eBirdNote}</span>
+                                </div>
+                              )}
+                              {/* When no geo entered, show a subtle hint instead */}
+                              {!a._eBirdPrimary && a.eBirdVerdict === "no_data" && !a._eBirdData && (
+                                <div style={{marginTop:5,padding:"5px 9px",background:"rgba(143,175,138,.04)",border:"1px solid rgba(143,175,138,.1)",borderRadius:7,fontSize:".68rem",color:"rgba(143,175,138,.45)",display:"flex",gap:5,alignItems:"center"}}>
+                                  <span>💡</span><span>Add a location to enable eBird regional verification</span>
                                 </div>
                               )}
                               {/* Candidate species pills */}
