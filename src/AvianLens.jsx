@@ -135,38 +135,32 @@ const fetchEBirdSpecies = async (coords, eBirdKey) => {
 const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = "") => {
   let resp, data;
 
-  // 1. Try Vercel serverless proxy
+  // 1. Try Vercel serverless proxy (hides API key, works in production)
+  //    404 = no proxy present (GitHub Pages) → fall through to direct call
   try {
-    console.log("[callClaude] POST /api/analyze model=", model, "maxTokens=", maxTokens);
     resp = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages, model, maxTokens, location }),
     });
-    console.log("[callClaude] proxy status:", resp.status, resp.statusText);
 
     if (resp.ok) {
       data = await resp.json();
-      console.log("[callClaude] proxy OK, content blocks:", data.content?.length);
       return data.content?.find(c => c.type === "text")?.text || "";
     }
 
     if (resp.status !== 404) {
       const errData = await resp.json().catch(() => ({}));
-      console.error("[callClaude] proxy error body:", errData);
       throw new Error(errData.error || `Server error ${resp.status}`);
     }
-    console.log("[callClaude] 404 — no proxy, falling through to direct call");
+    // 404 — no serverless proxy, fall through to direct call
   } catch(e) {
-    console.error("[callClaude] fetch threw:", e.message);
     if (!e.message.includes("fetch") && !e.message.includes("NetworkError") && !e.message.includes("Failed to fetch")) {
       throw e;
     }
-    console.log("[callClaude] network error — proxy unreachable, trying direct call");
   }
 
-  // 2. Direct Anthropic API call (GitHub Pages / local — needs user key)
-  console.log("[callClaude] direct call, apiKey present:", !!apiKey);
+  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user-supplied key)
   if (!apiKey) throw new Error("No API key — enter your Anthropic key (sk-ant-...) in the bar above");
   resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

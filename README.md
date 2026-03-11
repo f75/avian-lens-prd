@@ -1,55 +1,75 @@
 # 🦅 Avian Lens
 
-**AI-Powered Bird Photography Analysis & Species Identification**
+**AI-powered bird photography analysis & species identification**
 
-A freemium web app that uses Claude AI to analyze bird photographs — identifying species, scoring image quality, extracting EXIF metadata, and enabling export to social platforms.
+Upload bird photos and get instant species ID, quality scoring, and photographer tips — powered by Claude AI.
 
 ---
 
-## ✨ Features
+## Features
 
-| Feature | Explorer (Free) | Ornithologist Pro ($10/mo) |
-|---|---|---|
-| Images per session | 3 | 20 |
-| Species identification | ✅ | ✅ |
-| Quality score (1–10) | ✅ | ✅ |
-| EXIF metadata | ✅ | ✅ |
-| Photographer tips | ✅ | ✅ |
-| Quality gate filter | ✅ | ✅ |
-| Per-species cap filter | ✅ | ✅ |
-| Social media export | ❌ | ✅ |
-| AI Model | claude-haiku-4-5 | claude-haiku-4-5 |
+- 🔬 **Species Identification** — Common name, scientific name, confidence level
+- 📊 **Quality Scoring** — 1–10 scale with Masterpiece → Poor grades
+- 📷 **EXIF Metadata** — Camera make/model, date, focal length, ISO, exposure
+- 📍 **Geo Context** — Location-aware analysis with eBird regional species data
+- 🎚 **Smart Filters** — Quality gate slider + per-species cap
+- 📤 **Social Export** — Upload filtered photos to Google Photos, Instagram, Facebook
+- 🆓 **Freemium** — Explorer (3 free) / Ornithologist Pro ($10/mo, 20 images)
 
-## 🔬 Analysis Output
+## Tech Stack
 
-For each uploaded bird photo, the AI provides:
+- **Frontend** — React 18 + Vite (singlefile build, no CDN dependencies)
+- **AI** — Claude Haiku 4.5 (free tier) / Claude Haiku 4.5 (pro tier)
+- **Backend** — Vercel serverless function (`/api/analyze.js`)
+- **Bird Data** — eBird API for regional species context
 
-- **Species ID** — Common name + scientific name + confidence level
-- **Quality Score** — 1–10 rating with grade (Masterpiece → Poor)
-- **Photo Analysis** — Lighting, composition, focus/sharpness, behavior
-- **Improvement Tips** — Actionable photographer recommendations
-- **Image Metadata** — File name, date, camera make/model, ISO, exposure, focal length
+## Deploy to Vercel
 
-## 🚀 Getting Started
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/f75/avian-lens)
 
-### Installation
+1. Click **Deploy with Vercel** above
+2. Add environment variable: `ANTHROPIC_API_KEY` = your Anthropic API key
+3. Optionally add: `EBIRD_API_KEY` for regional bird data
+4. Deploy!
+
+## Local Development
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/avian-lens.git
-cd avian-lens
+# Install deps
 npm install
-npm run dev
+
+# Build (uses vite.config.js.local)
+cp vite.config.js.local vite.config.js
+npx vite build
+rm vite.config.js
+
+# For live dev server
+npx vite --config vite.config.js.local
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Set `ANTHROPIC_API_KEY` in Vercel environment variables — never commit API keys.
 
-## 🛠 Tech Stack
+## Environment Variables
 
-- **React 18** + **Vite**
-- **Anthropic Claude API** (claude-haiku-4-5)
-- Pure CSS custom design system
-- EXIF parsing in pure JS
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | ✅ Yes | Your Anthropic API key (`sk-ant-...`) |
+| `EBIRD_API_KEY` | Optional | eBird API key for regional species context |
 
-## 📄 License
+## Project Structure
+
+```
+avian-lens/
+├── api/
+│   └── analyze.js        # Vercel serverless function (proxies Anthropic API)
+├── src/
+│   └── AvianLens.jsx     # Main React app (single file)
+├── dist/
+│   └── index.html        # Pre-built singlefile bundle (committed)
+├── vercel.json           # Vercel config
+└── vite.config.js.local  # Vite build config (renamed to avoid Vercel detection)
+```
+
+## License
 
 MIT
