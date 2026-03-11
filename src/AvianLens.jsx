@@ -67,6 +67,31 @@ const readDataUrl = (file) => new Promise((res, rej) => {
   r.readAsDataURL(file);
 });
 
+// Resize + compress to stay under Vercel 4.5MB body limit (~1024px, JPEG 0.82)
+const compressImage = (file) => new Promise((resolve, reject) => {
+  const MAX_PX = 1024, QUALITY = 0.82;
+  const reader = new FileReader();
+  reader.onerror = reject;
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onerror = reject;
+    img.onload = () => {
+      const { naturalWidth: w, naturalHeight: h } = img;
+      let tw = w, th = h;
+      if (w > MAX_PX || h > MAX_PX) {
+        if (w >= h) { tw = MAX_PX; th = Math.round(h * MAX_PX / w); }
+        else        { th = MAX_PX; tw = Math.round(w * MAX_PX / h); }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = tw; canvas.height = th;
+      canvas.getContext("2d").drawImage(img, 0, 0, tw, th);
+      resolve(canvas.toDataURL("image/jpeg", QUALITY));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
 // ── EBIRD ─────────────────────────────────────────────────────────────────────
 // Parse lat/lng from a free-text location string like "25.28°N 80.89°W" or "25.28,-80.89"
 const parseCoords = (loc) => {
@@ -619,12 +644,12 @@ export default function AvianLens() {
     const toAdd = valid.slice(0, avail);
 
     const processed = await Promise.all(toAdd.map(async file => {
-      const dataUrl = await readDataUrl(file);
+      const dataUrl = await compressImage(file);  // compressed to ~1024px JPEG for API
       const exif    = await extractExif(file);
       return {
         dataUrl, name: file.name,
         size: (file.size / 1024).toFixed(1) + "KB",
-        type: file.type,
+        type: "image/jpeg",  // always JPEG after compression
         lastMod: new Date(file.lastModified).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" }),
         exif, analysis: null, error: null,
       };
