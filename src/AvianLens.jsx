@@ -135,38 +135,38 @@ const fetchEBirdSpecies = async (coords, eBirdKey) => {
 const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = "") => {
   let resp, data;
 
-  // 1. Try Vercel serverless proxy (hides API key, works in production)
-  //    We probe /api/analyze first. A 404 means we're on GitHub Pages (no serverless).
-  //    Any other status = proxy exists but errored → surface the error, never fall through.
-  let proxyExists = false;
+  // 1. Try Vercel serverless proxy
   try {
+    console.log("[callClaude] POST /api/analyze model=", model, "maxTokens=", maxTokens);
     resp = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages, model, maxTokens, location }),
     });
-    proxyExists = true; // got a real HTTP response — proxy is present
+    console.log("[callClaude] proxy status:", resp.status, resp.statusText);
 
     if (resp.ok) {
       data = await resp.json();
+      console.log("[callClaude] proxy OK, content blocks:", data.content?.length);
       return data.content?.find(c => c.type === "text")?.text || "";
     }
 
-    // Proxy returned an error — always surface it (never fall through)
-    const errData = await resp.json().catch(() => ({}));
-    const msg = errData.error || `Server error ${resp.status}`;
-    // Special hint for the common "env var not set" case
-    if (resp.status === 404) {
-      proxyExists = false; // genuine 404 = no proxy route (GitHub Pages)
-    } else {
-      throw new Error(msg);
+    if (resp.status !== 404) {
+      const errData = await resp.json().catch(() => ({}));
+      console.error("[callClaude] proxy error body:", errData);
+      throw new Error(errData.error || `Server error ${resp.status}`);
     }
+    console.log("[callClaude] 404 — no proxy, falling through to direct call");
   } catch(e) {
-    if (proxyExists) throw e; // proxy returned real error — propagate
-    // else: network error reaching proxy → treat as "no proxy", fall through
+    console.error("[callClaude] fetch threw:", e.message);
+    if (!e.message.includes("fetch") && !e.message.includes("NetworkError") && !e.message.includes("Failed to fetch")) {
+      throw e;
+    }
+    console.log("[callClaude] network error — proxy unreachable, trying direct call");
   }
 
-  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user-supplied key)
+  // 2. Direct Anthropic API call (GitHub Pages / local — needs user key)
+  console.log("[callClaude] direct call, apiKey present:", !!apiKey);
   if (!apiKey) throw new Error("No API key — enter your Anthropic key (sk-ant-...) in the bar above");
   resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
