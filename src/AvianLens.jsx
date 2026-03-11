@@ -834,6 +834,8 @@ export default function AvianLens() {
   const [images,      setImages]      = useState([]);   // all uploaded
   const [location,    setLocation]    = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isCancelled, setIsCancelled] = useState(false);
+  const cancelRef = useRef(false);
   const [curIdx,      setCurIdx]      = useState(-1);
   const [progressMsg, setProgressMsg] = useState("");
   const [selIdx,      setSelIdx]      = useState(0);
@@ -917,19 +919,23 @@ export default function AvianLens() {
   const clearAll = () => { setImages([]); setSelIdx(0); setSessionUsed(0); };
 
   // ── ANALYZE ──────────────────────────────────────────────────────────────
+  const stopAnalysis = () => { cancelRef.current = true; setIsCancelled(true); };
+
   const runAnalysis = async (specificIdx = null) => {
     if (!images.length || isAnalyzing) return;
+    cancelRef.current = false;
+    setIsCancelled(false);
     setIsAnalyzing(true);
 
     let used = sessionUsed;
-    // Snapshot images NOW to avoid stale-closure bugs in async loop
     const snapshot = [...images];
     const indices = specificIdx !== null ? [specificIdx] : snapshot.map((_,i) => i);
     for (const i of indices) {
+      if (cancelRef.current) break;
       const img = snapshot[i];
-      if (!img) continue;                                          // guard: index out of bounds
-      if (!img.dataUrl) continue;                                  // guard: dataUrl missing
-      if (specificIdx === null && img.analysis) continue;          // skip already-analyzed
+      if (!img) continue;
+      if (!img.dataUrl) continue;
+      if (specificIdx === null && img.analysis) continue;
       if (used >= limit) { setShowUpgrade(true); break; }
       setCurIdx(i); setSelIdx(i);
       try {
@@ -939,17 +945,20 @@ export default function AvianLens() {
         try {
           analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg);
         } catch(e1) {
+          if (cancelRef.current) break;
           await new Promise(r => setTimeout(r, 1500));
           analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg);
         }
+        if (cancelRef.current) break;
         setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
         used++;
       } catch(e) {
+        if (cancelRef.current) break;
         const msg = e?.message || "Unknown error — please retry";
         setImages(prev => { const n = [...prev]; n[i] = { ...n[i], error: msg }; return n; });
       }
     }
-    setSessionUsed(used); setCurIdx(-1); setIsAnalyzing(false);
+    setSessionUsed(used); setCurIdx(-1); setIsAnalyzing(false); setProgressMsg("");
   };
 
   // Re-analyze a single image with a user-provided correction hint
@@ -1382,17 +1391,38 @@ export default function AvianLens() {
                       <div className="pbr"><div className="pbf"/></div>
                     </div>
                   )}
-                  <button className="abtn" onClick={() => runAnalysis()} disabled={images.length===0||isAnalyzing}>
-                    {isAnalyzing
-                      ? <><div className="spin" style={{width:15,height:15,borderTopColor:"#060f07"}}/>Analyzing…</>
-                      : images.some(i=>i.analysis)
-                        ? `⟳ Re-analyze (${images.length})`
-                        : `⟡ Analyze ${images.length > 0 ? images.length+" Images" : "Images"}`}
-                  </button>
+                  {isCancelled && !isAnalyzing && (
+                    <div style={{marginBottom:8,padding:"6px 10px",background:"rgba(200,168,75,.06)",border:"1px solid rgba(200,168,75,.2)",borderRadius:7,fontSize:".72rem",color:"#C8A84B",display:"flex",alignItems:"center",gap:6}}>
+                      ⏹ Analysis stopped — {images.filter(i=>i.analysis).length} of {images.length} images completed
+                    </div>
+                  )}
+                  <div style={{display:"flex",gap:7}}>
+                    <button className="abtn" style={{flex:1}} onClick={() => runAnalysis()} disabled={images.length===0||isAnalyzing}>
+                      {isAnalyzing
+                        ? <><div className="spin" style={{width:15,height:15,borderTopColor:"#060f07"}}/>Analyzing…</>
+                        : images.some(i=>i.analysis)
+                          ? `⟳ Re-analyze (${images.length})`
+                          : `⟡ Analyze ${images.length > 0 ? images.length+" Images" : "Images"}`}
+                    </button>
+                    {isAnalyzing && (
+                      <button onClick={stopAnalysis} style={{
+                        padding:"0 14px",borderRadius:9,border:"1px solid rgba(244,67,54,.4)",
+                        background:"rgba(244,67,54,.08)",color:"#EF9A9A",
+                        fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,
+                        cursor:"pointer",transition:"all .2s",whiteSpace:"nowrap",flexShrink:0,
+                      }}
+                      onMouseEnter={e=>{e.currentTarget.style.background="rgba(244,67,54,.18)";e.currentTarget.style.borderColor="rgba(244,67,54,.7)";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="rgba(244,67,54,.08)";e.currentTarget.style.borderColor="rgba(244,67,54,.4)";}}>
+                        ⏹ Stop
+                      </button>
+                    )}
+                  </div>
                   <div className="abtn-sub">
                     {images.length === 0
                       ? "Upload multiple images above to begin"
-                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}`}
+                      : isAnalyzing
+                        ? `Click Stop to halt after the current image finishes`
+                        : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}`}
                   </div>
                 </div>
 
