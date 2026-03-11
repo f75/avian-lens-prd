@@ -8,7 +8,7 @@ const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
 const FREE_LIMIT = 3;
 const PAID_LIMIT = 20;
 const FREE_MODEL  = "claude-haiku-4-5-20251001";
-const PAID_MODEL  = "claude-haiku-4-5-20251001"; // using Haiku for both tiers to minimize cost
+const PAID_MODEL  = "claude-sonnet-4-5-20251001"; // Sonnet for Pro tier — better species ID accuracy
 
 const SOCIAL = [
   { id:"google",    name:"Google Photos", icon:"🔵" },
@@ -834,7 +834,8 @@ export default function AvianLens() {
               <div className="pc" onClick={()=>{setTier("free");setPage("workspace");}}>
                 <div className="t-name">Explorer</div>
                 <div className="t-price">Free</div>
-                <div className="mc-chip">⚡ claude-haiku-4-5</div>
+                <div className="mc-chip">⚡ ${tier==="paid"?"claude-sonnet-4-5":"claude-haiku-4-5"}</div>
+
                 <ul className="t-feats">
                   <li>{FREE_LIMIT} images per session</li>
                   <li>Species identification</li>
@@ -848,7 +849,7 @@ export default function AvianLens() {
               <div className="pc hot" onClick={()=>{setTier("paid");setPage("workspace");}}>
                 <div className="t-name">Ornithologist Pro</div>
                 <div className="t-price">$10 <small>/mo</small></div>
-                <div className="mc-chip pro">⚡ claude-haiku-4-5</div>
+                <div className="mc-chip pro">🚀 claude-sonnet-4-5</div>
                 <ul className="t-feats">
                   <li>{PAID_LIMIT} images per batch</li>
                   <li>Advanced species analysis</li>
@@ -1101,7 +1102,7 @@ export default function AvianLens() {
                   {isAnalyzing && (
                     <div style={{marginBottom:8}}>
                       <div style={{fontSize:".67rem",color:"#8FAF8A",marginBottom:4}}>
-                        Analyzing {curIdx+1}/{images.filter(i=>!i.analysis).length} · Haiku 4.5
+                        Analyzing {curIdx+1}/{images.filter(i=>!i.analysis).length} · {tier==="paid"?"Sonnet 4.5 🚀":"Haiku 4.5 ⚡"}
                       </div>
                       <div className="pbr"><div className="pbf"/></div>
                     </div>
@@ -1116,7 +1117,7 @@ export default function AvianLens() {
                   <div className="abtn-sub">
                     {images.length === 0
                       ? "Upload multiple images above to begin"
-                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · 2-Pass Haiku ⚡`}
+                      : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.5 🚀":"Haiku 4.5 ⚡"}`}
                   </div>
                 </div>
 
@@ -1169,7 +1170,7 @@ export default function AvianLens() {
                     <div style={{fontSize:".95rem",maxWidth:280,lineHeight:1.65,textAlign:"center",color:"rgba(143,175,138,.45)"}}>
                       Set your quality gate and species limit, then drop multiple bird photos to upload and analyze.
                     </div>
-                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ claude-haiku-4-5</div>
+                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ ${tier==="paid"?"claude-sonnet-4-5":"claude-haiku-4-5"}</div>
                   </div>
                 ) : selImg ? (
                   <div>
@@ -1197,7 +1198,7 @@ export default function AvianLens() {
                     {curIdx === selIdx && (
                       <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
                         <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
-                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with 2-Pass Haiku…</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Sonnet 4.5 🚀":"Haiku 4.5 ⚡"}…</div>
                         <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>Pass 1: visual description → Pass 2: species ID</div>
                       </div>
                     )}
@@ -1403,7 +1404,7 @@ export default function AvianLens() {
               <div className="m-desc">{tier==="free"?`Free plan allows ${FREE_LIMIT} images. Upgrade for ${PAID_LIMIT} per batch with Claude Sonnet's deeper analysis and social export.`:"Unlock Avian Lens Pro."}</div>
               <div className="upbox">
                 <div className="upbox-price">$10 <span style={{fontSize:".88rem",fontWeight:400,color:"#8FAF8A"}}>/month</span></div>
-                <div className="upbox-detail">{PAID_LIMIT} images · Haiku 4.5 · Social Export · Advanced Analysis</div>
+                <div className="upbox-detail">{PAID_LIMIT} images · Sonnet 4.5 · Social Export · Advanced Analysis</div>
               </div>
               <button className="btn btn-gold" style={{marginBottom:8}} onClick={()=>{setTier("paid");setSessionUsed(0);setImages([]);setShowUpgrade(false);}}>Upgrade Now →</button>
               <button className="btn btn-ghost" onClick={()=>setShowUpgrade(false)}>Continue free</button>
