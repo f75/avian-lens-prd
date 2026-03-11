@@ -2,6 +2,10 @@
   "framework": null,
   "buildCommand": null,
   "outputDirectory": "dist",
+  "functions": {
+    "api/analyze.js": { "maxDuration": 30 },
+    "api/ebird.js":   { "maxDuration": 10 }
+  },
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]

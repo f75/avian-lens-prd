@@ -8,7 +8,7 @@ const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
 const FREE_LIMIT = 3;
 const PAID_LIMIT = 20;
 const FREE_MODEL  = "claude-haiku-4-5-20251001";
-const PAID_MODEL  = "claude-sonnet-4-5-20251001"; // Sonnet for Pro — better species ID accuracy
+const PAID_MODEL  = "claude-sonnet-4-6"; // Sonnet 4.6 for Pro — best available model
 
 const SOCIAL = [
   { id:"google",    name:"Google Photos", icon:"🔵" },
@@ -1045,7 +1045,7 @@ export default function AvianLens() {
               <div className="pc" onClick={()=>{setTier("free");setPage("workspace");}}>
                 <div className="t-name">Explorer</div>
                 <div className="t-price">Free</div>
-                <div className="mc-chip">⚡ ${tier==="paid"?"claude-sonnet-4-5":"claude-haiku-4-5"}</div>
+                <div className="mc-chip">⚡ ${tier==="paid"?"claude-sonnet-4-6":"claude-haiku-4-5"}</div>
 
                 <ul className="t-feats">
                   <li>{FREE_LIMIT} images per session</li>
@@ -1060,7 +1060,7 @@ export default function AvianLens() {
               <div className="pc hot" onClick={()=>{setTier("paid");setPage("workspace");}}>
                 <div className="t-name">Ornithologist Pro</div>
                 <div className="t-price">$10 <small>/mo</small></div>
-                <div className="mc-chip pro">🚀 claude-sonnet-4-5</div>
+                <div className="mc-chip pro">🚀 claude-sonnet-4-6</div>
                 <ul className="t-feats">
                   <li>{PAID_LIMIT} images per batch</li>
                   <li>Advanced species analysis</li>
@@ -1381,7 +1381,7 @@ export default function AvianLens() {
                     <div style={{fontSize:".95rem",maxWidth:280,lineHeight:1.65,textAlign:"center",color:"rgba(143,175,138,.45)"}}>
                       Set your quality gate and species limit, then drop multiple bird photos to upload and analyze.
                     </div>
-                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ ${tier==="paid"?"claude-sonnet-4-5":"claude-haiku-4-5"}</div>
+                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ ${tier==="paid"?"claude-sonnet-4-6":"claude-haiku-4-5"}</div>
                   </div>
                 ) : selImg ? (
                   <div>

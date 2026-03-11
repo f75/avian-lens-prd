@@ -68,7 +68,7 @@ export default async function handler(req, res) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: model || "claude-haiku-4-5-20251001", // caller passes correct model per tier
+        model: model || "claude-haiku-4-5-20251001" // caller always passes the right model, // caller passes correct model per tier
         max_tokens: maxTokens || 1200,
         messages: enrichedMessages,
       }),
