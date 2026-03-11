@@ -148,10 +148,11 @@ const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = 
 // Pass 3 (arbitration → final ID): Claude sees eBird frequency data and must justify overriding it
 
 // Helper: call /api/ebird to get occurrence counts for candidate species
-const fetchEBirdCounts = async (lat, lng, candidates) => {
+const fetchEBirdCounts = async (lat, lng, candidates, obsDate = "") => {
   if (!lat || !lng || !candidates.length) return null;
   try {
     const params = new URLSearchParams({ lat, lng, candidates: candidates.join("|") });
+    if (obsDate) params.set("obsDate", obsDate);
     const resp = await fetch(`/api/ebird?${params}`);
     if (!resp.ok) return null;
     return await resp.json();
@@ -176,7 +177,7 @@ const parseCoords = (loc) => {
   return null;
 };
 
-const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null) => {
+const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null, obsDate = "") => {
   const progress = (msg) => onProgress && onProgress(msg);
   const fallback = (msg) => ({
     species:"Unidentifiable", scientificName:"", confidence:"Low",
@@ -198,20 +199,22 @@ const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = []
         { type: "text", text:
 `You are a field ornithologist making careful systematic notes about a bird photograph.
 Location: ${location || "not specified"}
+Date: ${obsDate || "not specified"}${obsDate ? " — consider expected seasonal plumage, active migrants, and winter/summer residents for this date" : ""}
 
-Report ONLY what is clearly visible. Use precise field-guide language. Be specific about colors (avoid vague terms like "brownish" — say "warm buffy-brown" or "olive-gray"). Format your response as labeled sections:
+Report ONLY what is clearly visible. Use precise field-guide language. Be specific about colors (never "brownish" — say "warm buffy-brown" or "olive-gray"). Format your response as labeled sections:
 
 SIZE: Compare to a known bird (sparrow/robin/pigeon/crow/duck/goose). Note body length and bulk.
 SHAPE: Body profile, neck length, tail length relative to body, wing projection at rest, posture (upright/horizontal).
-HEAD: Crown color and pattern (uniform/streaked/capped), forehead, nape, eye color, eye ring (size and color), supercilium (present/absent, color, extent), lore color, cheek patch, ear covert color, chin and throat color.
-BILL: Length relative to head, shape (straight/downcurved/decurved/hooked/spatulate/conical/slender/robust), color (upper/lower mandible), tip shape.
-BREAST & BELLY: Exact base color, any streaking (fine/bold, width, extent), spotting, barring, or clean. Flank color.
-BACK & WINGS: Mantle color, scapular pattern, wing bar count and color (if any), tertial edge color, rump color if visible, primary projection beyond tertials.
-TAIL: Upper and under-tail color, shape (forked/square/rounded/graduated/pointed), outer tail feather color if different.
+HEAD: Crown color and pattern (uniform/streaked/capped), nape, eye color, eye ring (size and color if present), supercilium (present/absent, color, extent), lore color, cheek/ear covert color, chin and throat color.
+BILL: Length relative to head, shape (straight/downcurved/hooked/conical/slender/robust), color upper/lower mandible, tip shape. Bill is often the single most diagnostic feature — be precise.
+BREAST & BELLY: Exact base color, streaking (fine/bold, extent), spotting, barring, or clean. Flank color. Any contrasting bib or gorget.
+BACK & WINGS: Mantle color, scapular pattern, wing bar count and color, tertial edges, rump color if visible, primary projection beyond tertials at rest.
+TAIL: Upper/under-tail color, shape (forked/square/rounded/graduated/pointed), outer tail feather color if different. Any terminal band.
 LEGS & FEET: Color, length relative to body (short/medium/long).
-HABITAT: Perch substrate (wire/branch/reed/rock/ground/fence), surrounding vegetation type, water presence, open/dense habitat.
-BEHAVIOR: Activity (foraging/singing/preening/alert/flying), posture, wing or tail movements.
-PHOTO QUALITY: Lighting direction (front/side/back-lit), quality (harsh/soft/dappled), focus quality (tack-sharp/slightly soft/motion blur), subject size in frame (small/medium/large fill), background (clean bokeh/busy/cluttered), angle (profile/three-quarter/front/rear).` }
+HABITAT: Perch type (wire/branch/reed/rock/ground/fence/water), vegetation type, open/dense/aquatic.
+BEHAVIOR: Activity (foraging/singing/preening/alert/in-flight), posture, any wing or tail pumping/flicking.
+PHOTO QUALITY: Lighting (front/side/back-lit, harsh/soft), focus (tack-sharp/slightly soft/motion blur), subject fill (small/medium/large), background (clean bokeh/busy), angle (profile/three-quarter/front/rear).
+KEY DIAGNOSTIC MARKS: List the 2–3 features most useful for distinguishing this bird from similar species.` }
       ]
     }], model, apiKey, 1000, location);
   } catch(e) {
@@ -225,12 +228,19 @@ PHOTO QUALITY: Lighting direction (front/side/back-lit), quality (harsh/soft/dap
     const raw = await callClaude([{
       role: "user",
       content:
-`You are an expert ornithologist. Based ONLY on the field notes below, generate the TOP 3 most likely species — do NOT give a final ID yet. Ignore any prior suggestions; rely solely on the field marks described.
+`You are a senior ornithologist. Based ONLY on the field notes below, generate the TOP 5 most likely species. Do NOT give a final ID yet. Work from the KEY DIAGNOSTIC MARKS outward — bill shape and size, wing pattern, and head markings are usually most reliable. Ignore location bias; rely solely on field marks.
 
 FIELD NOTES:
 ${fieldNotes}
 
 Location: ${location || "unknown"}
+Date: ${obsDate || "unknown"}
+
+Rules:
+- Confidence scores must sum to 100
+- Never invent marks not present in the field notes
+- "concern" must name a real field mark mismatch, not just "unlikely"
+- Consider subspecies and age/sex variants if they fit better
 
 Return ONLY valid JSON — no text outside the JSON:
 {
@@ -238,23 +248,37 @@ Return ONLY valid JSON — no text outside the JSON:
     {
       "species": "Common name",
       "scientificName": "Genus species",
-      "confidence": 75,
-      "keyMarks": "2-3 specific field marks from the notes that support this ID",
-      "concern": "The one thing that doesn't fit perfectly, or empty string"
+      "confidence": 60,
+      "keyMarks": "Specific field marks from the notes that clinch this ID",
+      "concern": "One genuine field mark mismatch or ambiguity, or empty string"
     },
     {
       "species": "Second candidate",
       "scientificName": "Genus species",
-      "confidence": 18,
-      "keyMarks": "Why this is a viable alternative",
-      "concern": "Why it's ranked lower"
+      "confidence": 20,
+      "keyMarks": "Marks supporting this alternative",
+      "concern": "What rules it out or makes it less likely"
     },
     {
       "species": "Third candidate",
       "scientificName": "Genus species",
+      "confidence": 10,
+      "keyMarks": "Supporting marks",
+      "concern": "Main reason it ranks lower"
+    },
+    {
+      "species": "Fourth candidate",
+      "scientificName": "Genus species",
       "confidence": 7,
       "keyMarks": "Supporting marks",
-      "concern": "Main reason it's unlikely"
+      "concern": "Main reason it ranks lower"
+    },
+    {
+      "species": "Fifth candidate",
+      "scientificName": "Genus species",
+      "confidence": 3,
+      "keyMarks": "Supporting marks",
+      "concern": "Main reason it ranks lower"
     }
   ],
   "qualityScore": <1-10 integer based on photo quality>,
@@ -282,25 +306,43 @@ Return ONLY valid JSON — no text outside the JSON:
 
   if (coords && candidateNames.length) {
     progress("eBird — Checking regional occurrence data…");
-    eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames);
+    eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames, obsDate);
   }
 
   // ── GEO PATH: When location + eBird data available, pick the best eBird-confirmed candidate ──
   // If geo is provided and eBird has data, use it directly — no need for Pass 3 arbitration.
   if (coords && eBirdData?.scores && !correctionHint) {
-    // Score each candidate: observed candidates ranked by obsCount, unobserved pushed to bottom
+    // Score = visual confidence × eBird presence weight.
+    // Visual confidence is NEVER overridden by obsCount alone.
+    // A High-confidence rare species beats a Low-confidence common one.
     const scored = candidates.map(c => {
       const s = eBirdData.scores[c.species];
       const obsCount = (s?.observed && s.obsCount) ? s.obsCount : 0;
-      return { ...c, obsCount, observed: obsCount > 0 };
+      const observed = obsCount > 0;
+
+      // eBird multiplier: present=1.0–1.3 boost, absent=0.5 penalty (not zero — visual can override)
+      const eBirdMult = !observed ? 0.5
+        : obsCount > 20 ? 1.3
+        : obsCount > 4  ? 1.15
+        : 1.0; // rare but present: no penalty
+
+      // Visual confidence score (Pass 2 percentage, 0–100)
+      const visualScore = typeof c.confidence === "number" ? c.confidence : 50;
+      const combinedScore = visualScore * eBirdMult;
+
+      return { ...c, obsCount, observed, eBirdMult, visualScore, combinedScore };
     });
 
-    // Find best: first prefer observed candidates (highest obsCount), then fall back to visual-only top
-    const observed = scored.filter(c => c.observed).sort((a,b) => b.obsCount - a.obsCount);
-    const best = observed.length > 0 ? observed[0] : scored[0];
-    const bestScore = eBirdData.scores[best.species];
+    // Pick best by combined score. If top visual candidate has High confidence (>65%)
+    // and eBird has it as absent, still trust vision but flag it as unusual.
+    scored.sort((a, b) => b.combinedScore - a.combinedScore);
+    const best = scored[0];
 
-    const rarity = !best.observed ? "not recently recorded"
+    // Determine if eBird meaningfully changed the pick vs pure visual rank
+    const visualTop = candidates[0];
+    const eBirdChanged = best.species !== visualTop.species;
+
+    const rarity = !best.observed ? "not recently recorded in this area"
       : best.obsCount > 20 ? "very common in area"
       : best.obsCount > 4  ? "regularly seen in area"
       : "occasionally seen in area";
@@ -333,11 +375,13 @@ Return ONLY valid JSON — no text outside the JSON:
     return {
       species: best.species,
       scientificName: best.scientificName || "",
-      confidence: best.observed ? (best.obsCount > 10 ? "High" : "Medium") : "Low",
-      identificationReasoning: `Visual field marks match ${best.species}; ${best.observed ? `confirmed present in area (${best.obsCount} eBird records in last 30 days)` : "not recently recorded nearby — visual ID only"}.`,
-      alternativesConsidered: scored.slice(1).map(c => `${c.species} (${c.observed?c.obsCount+" records":"absent"})`).join(", ") || "none",
-      eBirdVerdict: best.observed ? "confirmed" : "no_data",
-      eBirdNote: `${best.species} is ${rarity}; ${eBirdData.totalSpecies} species reported within 75km in last 30 days.`,
+      confidence: best.visualScore > 65 ? "High" : best.visualScore > 40 ? "Medium" : "Low",
+      identificationReasoning: `${best.keyMarks}${best.observed ? ` — confirmed present in area (${best.obsCount} eBird records, ${eBirdData.dateLabel || "last 30 days"})` : " — visual ID; species not recently recorded in area"}.`,
+      alternativesConsidered: scored.slice(1).map(c => `${c.species} — visual ${c.visualScore}%, eBird: ${c.observed?c.obsCount+" records":"absent"}`).join("; ") || "none",
+      eBirdVerdict: best.observed ? (eBirdChanged ? "overridden" : "confirmed") : "unusual",
+      eBirdNote: best.observed
+        ? `${best.species} is ${rarity}; ${eBirdData.totalSpecies} species reported within 75km (${eBirdData.dateLabel || "last 30 days"}).${eBirdChanged ? ` eBird adjusted rank from visual #1 (${visualTop.species}).` : ""}`
+        : `${best.species} not recently recorded nearby — identification based on visual field marks alone.`,
       userSuggestionVerdict: undefined,
       interestingFact,
       ...photoFields,
@@ -417,35 +461,36 @@ Match: ${vResult.matchCount} marks | Mismatch: ${vResult.mismatchCount} marks
     txt = await callClaude([{
       role: "user",
       content:
-`You are a senior ornithologist making a final, evidence-based species identification. You must weigh visual field marks, eBird regional data, and (if present) an independent verification of the user's suggestion.
+`You are a senior ornithologist making a final, evidence-based species identification. You are known for accuracy over agreeableness. You have three sources of evidence — weight them in this order: (1) field marks, (2) date/season context, (3) eBird regional frequency.
 
-FIELD NOTES:
+FIELD NOTES (Pass 1 — systematic visual extraction):
 ${fieldNotes}
 
-BLIND VISUAL CANDIDATES (generated before any user input):
-${candidates.map((c,i) => `${i+1}. ${c.species} (${c.confidence}% confidence)\n   Supporting marks: ${c.keyMarks}\n   Concern: ${c.concern || "none"}`).join("\n")}
-${eBirdSummary || "\nNo eBird location data available — rely on field marks alone.\n"}${verificationSummary ? `
-${verificationSummary}` : ""}
-INSTRUCTIONS — follow these in order:
-1. Your primary evidence is FIELD MARKS. Never ignore clear visual evidence.
-2. Use eBird frequency as a prior: absent species need overwhelming field-mark evidence.
-3. If a verification summary is present: trust the MATCH/MISMATCH counts over the user's belief.
-   - CONFIRMED or PLAUSIBLE: the user may be right — weigh carefully against blind candidates.
-   - UNLIKELY or REFUTED: the user is probably wrong — stick with the blind candidate evidence.
-   - A polite user correction is NOT ornithological evidence. Field marks are.
-4. If you disagree with the user's suggestion, say so clearly. It is better to be accurate than agreeable.
+DATE / SEASON CONTEXT: ${obsDate || "unknown"}${obsDate ? " — factor in expected plumage, migration status, and seasonal abundance" : ""}
 
-Return ONLY valid JSON:
+BLIND VISUAL CANDIDATES (Pass 2 — ranked by field marks only, before any location bias):
+${candidates.map((c,i) => (i+1)+". "+c.species+" — "+c.confidence+"% visual confidence\n   ✓ "+c.keyMarks+"\n   ✗ Concern: "+(c.concern||"none")).join("\n")}
+${eBirdSummary || "\nNo eBird location data — base ID on field marks and season alone.\n"}${verificationSummary ? `
+${verificationSummary}` : ""}
+DECISION RULES (apply in order):
+1. FIELD MARKS ARE PRIMARY. A rare species with perfect field-mark match beats a common species with a poor one.
+2. BILL SHAPE + WING PATTERN + HEAD MARKS are the three most reliable features — weight them heavily.
+3. SEASON matters: a species in wrong plumage for the date loses confidence; an expected migrant gains it.
+4. EBIRD is a TIEBREAKER only — use it to resolve near-equal candidates, not to override clear visual evidence.
+5. If a user suggestion is present: the MISMATCH count in the verification summary is the truth. Reject it if mismatches > matches, regardless of how confidently the user states it.
+6. State your reasoning explicitly — name the 2–3 specific marks that clinch the final ID.
+
+Return ONLY valid JSON — no text outside:
 {
-  "species": "Final common name (or Unidentifiable if genuinely uncertain)",
+  "species": "Final common name (Unidentifiable only if genuinely impossible)",
   "scientificName": "Genus species",
   "confidence": "High/Medium/Low",
-  "identificationReasoning": "2-3 specific field marks that clinch this ID",
-  "alternativesConsidered": "How you weighed all candidates including user suggestion",
+  "identificationReasoning": "Name the specific field marks (bill, wing bars, head pattern etc.) that clinch this ID over the alternatives",
+  "alternativesConsidered": "Why each runner-up was ruled out — cite specific mark mismatches",
   "userSuggestionVerdict": "accepted|rejected|insufficient_evidence",
   "eBirdVerdict": "confirmed|unusual|overridden|no_data",
-  "eBirdNote": "One sentence on eBird data — ONLY if eBird data was actually provided above. If no eBird data, return empty string \"\"",
-  "interestingFact": "One fascinating fact about this species"
+  "eBirdNote": "One sentence on eBird data — ONLY if eBird data was provided. Empty string if not.",
+  "interestingFact": "One short, genuinely surprising fact about this species (not just diet or range)"
 }`
     }], model, apiKey, 900, location);
   } catch(e) {
@@ -833,6 +878,7 @@ export default function AvianLens() {
   const [sessionUsed, setSessionUsed] = useState(0);
   const [images,      setImages]      = useState([]);   // all uploaded
   const [location,    setLocation]    = useState("");
+  const [obsDate,      setObsDate]      = useState("");  // date of observation
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCancelled, setIsCancelled] = useState(false);
   const cancelRef = useRef(false);
@@ -943,11 +989,11 @@ export default function AvianLens() {
         if (!b64) throw new Error("Could not read image data — please re-upload");
         let analysis;
         try {
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate);
         } catch(e1) {
           if (cancelRef.current) break;
           await new Promise(r => setTimeout(r, 1500));
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate);
         }
         if (cancelRef.current) break;
         setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
@@ -974,10 +1020,10 @@ export default function AvianLens() {
       if (!b64) throw new Error("Could not read image data");
       let analysis;
       try {
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg);
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg, obsDate);
       } catch(e1) {
         await new Promise(r => setTimeout(r, 1500));
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg);
+        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg, obsDate);
       }
       analysis._correctionHint = hint;
       setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], analysis, error:null }; return n; });
@@ -1308,12 +1354,26 @@ export default function AvianLens() {
                   />
                 </div>
 
-                {/* Location */}
+                {/* Location + Date */}
                 <div className="loc-area">
-                  <label className="flbl">📍 Geographic Location</label>
-                  <input className="finp" placeholder="e.g. Everglades, Florida · 25.28°N 80.89°W  (coords enable eBird lookup)"
-                    value={location} onChange={e => setLocation(e.target.value)}/>
-
+                  <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                    <div style={{flex:"1 1 0",minWidth:0}}>
+                      <label className="flbl">📍 Location</label>
+                      <input className="finp" placeholder="e.g. Everglades, FL · 25.28°N 80.89°W"
+                        value={location} onChange={e => setLocation(e.target.value)}/>
+                    </div>
+                    <div style={{flex:"0 0 138px"}}>
+                      <label className="flbl">📅 Obs. Date</label>
+                      <input className="finp" type="date"
+                        value={obsDate} onChange={e => setObsDate(e.target.value)}
+                        style={{colorScheme:"dark",paddingRight:6}}/>
+                    </div>
+                  </div>
+                  {location && !obsDate && (
+                    <div style={{fontSize:".61rem",color:"rgba(200,168,75,.42)",marginTop:4}}>
+                      💡 Add date for seasonal eBird filtering
+                    </div>
+                  )}
                 </div>
 
                 {/* ═══ IMAGE QUEUE ═══ */}
