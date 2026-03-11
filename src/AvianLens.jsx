@@ -225,8 +225,8 @@ PHOTO QUALITY: Lighting direction (front/side/back-lit), quality (harsh/soft/dap
     const raw = await callClaude([{
       role: "user",
       content:
-`You are an expert ornithologist. Based on the field notes below, generate the TOP 3 most likely species — do NOT give a final ID yet. Your job here is only to produce ranked candidates with confidence percentages and key distinguishing marks for each.
-${correctionHint ? `\nUSER HINT: The photographer believes this may be "${correctionHint}". Include it in your candidates if it plausibly matches the field notes.\n` : ""}
+`You are an expert ornithologist. Based ONLY on the field notes below, generate the TOP 3 most likely species — do NOT give a final ID yet. Ignore any prior suggestions; rely solely on the field marks described.
+
 FIELD NOTES:
 ${fieldNotes}
 
@@ -299,27 +299,81 @@ Return ONLY valid JSON — no text outside the JSON:
     eBirdSummary = `\nEBIRD OCCURRENCE DATA — last 30 days, 75km radius:\n${lines.join("\n")}\nTotal species observed in area: ${eBirdData.totalSpecies}\n`;
   }
 
-  // ── PASS 3: Final arbitration — Claude must reconcile vision with eBird ──
-  progress("Pass 3 of 3 — eBird-verified final identification…");
+  // ── VERIFICATION PASS (only when user provides a correction hint) ──────────
+  // Runs BEFORE Pass 3. Stress-tests the user's suggestion against field notes
+  // field-mark by field-mark. Designed to REJECT bad suggestions, not confirm them.
+  let verificationSummary = "";
+  if (correctionHint) {
+    progress("Verifying your suggestion against field marks…");
+    try {
+      const verifyRaw = await callClaude([{
+        role: "user",
+        content:
+`You are a skeptical ornithologist acting as a fact-checker. A photographer claims the bird in these field notes is a "${correctionHint}". Your job is to VERIFY OR REFUTE this claim using only the observed field marks. Do NOT be polite — if the marks don't match, say so clearly.
+
+FIELD NOTES FROM THE PHOTOGRAPH:
+${fieldNotes}
+
+CLAIMED SPECIES: ${correctionHint}
+
+Your task:
+1. List the 5-6 most diagnostic field marks of a ${correctionHint} (from your ornithological knowledge)
+2. For each mark, check it against the field notes: MATCH / PARTIAL / MISMATCH / CANNOT DETERMINE
+3. Give an overall verdict
+
+Return ONLY valid JSON:
+{
+  "claimedSpecies": "${correctionHint}",
+  "diagnosticChecks": [
+    { "mark": "field mark name", "expected": "what ${correctionHint} shows", "observed": "what field notes say", "verdict": "MATCH|PARTIAL|MISMATCH|UNKNOWN" }
+  ],
+  "matchCount": <number of MATCH>,
+  "mismatchCount": <number of MISMATCH>,
+  "overallVerdict": "CONFIRMED|PLAUSIBLE|UNLIKELY|REFUTED",
+  "verificationNote": "One honest sentence — if marks mostly match say so; if they don't, say the suggestion is likely wrong"
+}`
+      }], model, apiKey, 700, location);
+      const vc = verifyRaw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
+      const vm = vc.match(/\{[\s\S]*\}/);
+      const vResult = JSON.parse(vm ? vm[0] : vc);
+      const checks = vResult.diagnosticChecks?.map(c =>
+        `  • ${c.mark}: expected "${c.expected}" → observed "${c.observed}" [${c.verdict}]`
+      ).join("\n") || "";
+      verificationSummary = `
+INDEPENDENT FIELD-MARK VERIFICATION OF USER'S CLAIM ("${correctionHint}"):
+${checks}
+Overall verdict: ${vResult.overallVerdict} — ${vResult.verificationNote}
+Match: ${vResult.matchCount} marks | Mismatch: ${vResult.mismatchCount} marks
+`;
+    } catch(_) {
+      // Verification failed silently — Pass 3 proceeds without it
+    }
+  }
+
+  // ── PASS 3: Final arbitration — Claude must reconcile vision + eBird + verification ──
+  progress(correctionHint ? "Pass 3 of 3 — Arbitrating with verification results…" : "Pass 3 of 3 — eBird-verified final identification…");
   let txt;
   try {
     txt = await callClaude([{
       role: "user",
       content:
-`You are a senior ornithologist making a final species identification. You have field notes, candidate species with confidence levels, and eBird occurrence data for the location.
+`You are a senior ornithologist making a final, evidence-based species identification. You must weigh visual field marks, eBird regional data, and (if present) an independent verification of the user's suggestion.
 
 FIELD NOTES:
 ${fieldNotes}
 
-CANDIDATE SPECIES (from visual analysis):
+BLIND VISUAL CANDIDATES (generated before any user input):
 ${candidates.map((c,i) => `${i+1}. ${c.species} (${c.confidence}% confidence)\n   Supporting marks: ${c.keyMarks}\n   Concern: ${c.concern || "none"}`).join("\n")}
-${eBirdSummary || "\nNo eBird location data available — rely on field marks alone.\n"}
-${correctionHint ? `\nUSER CORRECTION: The photographer believes this is "${correctionHint}". Address this specifically.\n` : ""}
-INSTRUCTIONS:
-- If the top candidate IS common/uncommon in eBird: confirm it (or justify overriding with field marks)
-- If the top candidate is ABSENT or rare in eBird: you MUST seriously consider the next candidate. Only stick with an absent species if the field marks are unambiguous and unique.
-- If NO candidates are in eBird: note this is an unusual sighting and lower confidence accordingly
-- Never sacrifice clear field marks for eBird frequency — a genuine rarity must be identified as such
+${eBirdSummary || "\nNo eBird location data available — rely on field marks alone.\n"}${verificationSummary ? `
+${verificationSummary}` : ""}
+INSTRUCTIONS — follow these in order:
+1. Your primary evidence is FIELD MARKS. Never ignore clear visual evidence.
+2. Use eBird frequency as a prior: absent species need overwhelming field-mark evidence.
+3. If a verification summary is present: trust the MATCH/MISMATCH counts over the user's belief.
+   - CONFIRMED or PLAUSIBLE: the user may be right — weigh carefully against blind candidates.
+   - UNLIKELY or REFUTED: the user is probably wrong — stick with the blind candidate evidence.
+   - A polite user correction is NOT ornithological evidence. Field marks are.
+4. If you disagree with the user's suggestion, say so clearly. It is better to be accurate than agreeable.
 
 Return ONLY valid JSON:
 {
@@ -327,12 +381,13 @@ Return ONLY valid JSON:
   "scientificName": "Genus species",
   "confidence": "High/Medium/Low",
   "identificationReasoning": "2-3 specific field marks that clinch this ID",
-  "alternativesConsidered": "How you eliminated the other candidates",
+  "alternativesConsidered": "How you weighed all candidates including user suggestion",
+  "userSuggestionVerdict": "accepted|rejected|insufficient_evidence",
   "eBirdVerdict": "confirmed|unusual|overridden|no_data",
-  "eBirdNote": "One sentence on how eBird data affected (or didn't affect) the final ID",
+  "eBirdNote": "One sentence on how eBird data affected the final ID",
   "interestingFact": "One fascinating fact about this species"
 }`
-    }], model, apiKey, 600, location);
+    }], model, apiKey, 700, location);
   } catch(e) {
     // Pass 3 failed — fall back to Pass 2 top candidate
     const top = candidates[0] || {};
@@ -363,6 +418,7 @@ Return ONLY valid JSON:
       alternativesConsidered: id.alternativesConsidered,
       eBirdVerdict: id.eBirdVerdict,
       eBirdNote: id.eBirdNote,
+      userSuggestionVerdict: id.userSuggestionVerdict,
       interestingFact: id.interestingFact,
       // Photo quality from Pass 2
       qualityScore: candidatesJson.qualityScore,
@@ -1400,7 +1456,22 @@ export default function AvianLens() {
                                     🔄 eBird revised ID
                                   </span>
                                 )}
-                                {a._correctionHint && (
+                                {a._correctionHint && a.userSuggestionVerdict === "accepted" && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.3)",color:"#81C784"}}>
+                                    ✓ Correction verified
+                                  </span>
+                                )}
+                                {a._correctionHint && a.userSuggestionVerdict === "rejected" && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(244,67,54,.1)",border:"1px solid rgba(244,67,54,.3)",color:"#EF9A9A"}}>
+                                    ✗ Correction rejected — field marks disagree
+                                  </span>
+                                )}
+                                {a._correctionHint && a.userSuggestionVerdict === "insufficient_evidence" && (
+                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>
+                                    ⚠ Correction uncertain
+                                  </span>
+                                )}
+                                {a._correctionHint && !a.userSuggestionVerdict && (
                                   <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>
                                     ✏ Re-analyzed with hint
                                   </span>
