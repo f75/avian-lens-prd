@@ -779,78 +779,85 @@ body{background:#060f07;}
 
 /* ── RIGHT PANEL ── */
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:65vh;color:rgba(143,175,138,.32);text-align:center;gap:10px;}
-.empty-ico{font-size:4rem;animation:float 5s ease-in-out infinite;}
-.empty-t{font-family:'Playfair Display',serif;font-size:1.3rem;color:rgba(143,175,138,.42);}
+.empty-ico{font-size:4.5rem;animation:float 5s ease-in-out infinite;}
+.empty-t{font-family:'Playfair Display',serif;font-size:1.35rem;color:rgba(143,175,138,.42);}
 
-/* IMAGE HEADER */
-.img-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+/* NAV BAR */
+.img-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
 .navbtn{background:rgba(200,168,75,.08);border:1px solid rgba(200,168,75,.2);color:#C8A84B;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.9rem;transition:all .2s;}
 .navbtn:hover{background:rgba(200,168,75,.2);}
 .navbtn:disabled{opacity:.22;cursor:not-allowed;}
 .dots{display:flex;gap:4px;}
 .dot{width:7px;height:7px;border-radius:50%;border:none;cursor:pointer;padding:0;transition:background .2s;}
 
-/* ── DASHBOARD LAYOUT ── */
-/* Row 1: image left + species/score right */
-.dash-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;align-items:start;}
-/* Row 2: two equal columns for analysis */
-.dash-bot{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.dash-col{display:flex;flex-direction:column;gap:9px;}
+/* ── MAIN LAYOUT: image top, 3-col info below ── */
+.dash-top{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;align-items:start;}
+@media(max-width:1100px){.dash-top{grid-template-columns:1fr 1fr;}}
+@media(max-width:760px){.dash-top{grid-template-columns:1fr;}}
+.dash-bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+@media(max-width:1100px){.dash-bot{grid-template-columns:1fr 1fr;}}
+@media(max-width:760px){.dash-bot{grid-template-columns:1fr;}}
+.dash-col{display:flex;flex-direction:column;gap:8px;}
 
-/* Image panel */
-.img-panel{position:relative;}
-.prev-img{width:100%;height:auto;max-height:min(340px,38vh);object-fit:contain;border-radius:11px;background:rgba(14,26,14,.7);display:block;cursor:zoom-in;}
+/* Full-width image strip */
+.img-strip{margin-bottom:10px;position:relative;}
+.prev-img{width:100%;height:auto;max-height:min(52vh,480px);object-fit:contain;border-radius:12px;background:rgba(10,20,10,.8);display:block;cursor:zoom-in;}
+/* Metadata row overlaid at bottom of image */
+.img-meta-bar{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
+.imb{display:flex;align-items:center;gap:5px;background:rgba(14,26,14,.85);border:1px solid rgba(100,150,100,.16);border-radius:6px;padding:4px 9px;}
+.imb-k{font-size:.65rem;color:rgba(143,175,138,.55);text-transform:uppercase;letter-spacing:.07em;white-space:nowrap;}
+.imb-v{font-size:.78rem;color:#EDE8D8;font-weight:500;}
 
-/* SPECIES HERO */
-.sp-hero{background:linear-gradient(135deg,rgba(28,50,26,.95),rgba(16,30,16,.95));border:1px solid rgba(100,150,100,.22);border-radius:11px;padding:14px 16px;position:relative;overflow:hidden;height:100%;}
-.sp-hero::before{content:'';position:absolute;top:-20px;right:-12px;width:90px;height:90px;background:radial-gradient(circle,rgba(200,168,75,.12),transparent 70%);}
-.sp-eyebrow{font-size:.78rem;font-weight:700;letter-spacing:.14em;color:rgba(143,175,138,.6);text-transform:uppercase;margin-bottom:4px;}
-.sp-name{font-family:'Playfair Display',serif;font-size:clamp(1.2rem,2.5vw,1.7rem);font-weight:700;color:#EDE8D8;line-height:1.1;margin-bottom:2px;}
-.sp-sci{font-family:'Playfair Display',serif;font-style:italic;font-size:.95rem;color:#8FAF8A;margin-bottom:10px;}
-.sp-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
-.conf-chip{padding:4px 11px;border-radius:10px;font-size:.8rem;font-weight:700;letter-spacing:.04em;background:rgba(200,168,75,.1);border:1px solid rgba(200,168,75,.26);color:#C8A84B;}
+/* SPECIES HERO panel */
+.sp-hero{background:linear-gradient(135deg,rgba(24,44,22,.97),rgba(14,26,14,.97));border:1px solid rgba(100,150,100,.24);border-radius:11px;padding:14px 16px;position:relative;overflow:hidden;}
+.sp-hero::before{content:'';position:absolute;top:-24px;right:-14px;width:100px;height:100px;background:radial-gradient(circle,rgba(200,168,75,.1),transparent 68%);}
+.sp-eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.16em;color:rgba(143,175,138,.55);text-transform:uppercase;margin-bottom:3px;}
+.sp-name{font-family:'Playfair Display',serif;font-size:clamp(1.3rem,2.8vw,1.9rem);font-weight:700;color:#EDE8D8;line-height:1.05;margin-bottom:1px;}
+.sp-sci{font-family:'Playfair Display',serif;font-style:italic;font-size:1rem;color:#8FAF8A;margin-bottom:9px;}
+.sp-badges{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:10px;}
+.conf-chip{padding:4px 11px;border-radius:10px;font-size:.78rem;font-weight:700;letter-spacing:.04em;background:rgba(200,168,75,.1);border:1px solid rgba(200,168,75,.28);color:#C8A84B;}
 
-/* SCORE INLINE */
-.score-inline{display:flex;align-items:center;gap:10px;background:rgba(10,20,10,.5);border:1px solid rgba(100,150,100,.18);border-radius:9px;padding:10px 13px;margin-bottom:10px;}
-.score-big{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:700;line-height:1;flex-shrink:0;}
+/* SCORE BLOCK */
+.score-block{display:flex;align-items:center;gap:12px;background:rgba(8,18,8,.6);border:1px solid rgba(100,150,100,.2);border-radius:9px;padding:10px 14px;margin-bottom:10px;}
+.score-big{font-family:'Playfair Display',serif;font-size:3rem;font-weight:700;line-height:1;flex-shrink:0;}
 .score-info{flex:1;}
-.score-grade{font-size:.95rem;font-weight:700;margin-bottom:3px;}
+.score-grade{font-size:1rem;font-weight:700;margin-bottom:4px;}
 .score-bar-track{width:100%;height:5px;background:rgba(22,40,22,.8);border-radius:3px;overflow:hidden;}
 .score-bar-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.4,0,.2,1);}
-.score-summary{font-size:.85rem;color:#BAD0BA;margin-top:5px;line-height:1.45;}
+.score-summary{font-size:.88rem;color:#BAD0BA;margin-top:5px;line-height:1.5;}
 
 /* GATE BADGE */
-.gate-pass{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:.8rem;font-weight:700;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.28);color:#81C784;}
-.gate-fail{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:.8rem;font-weight:700;background:rgba(200,80,40,.1);border:1px solid rgba(200,80,40,.28);color:#E8956A;}
+.gate-pass{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:18px;font-size:.75rem;font-weight:700;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);color:#81C784;}
+.gate-fail{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:18px;font-size:.75rem;font-weight:700;background:rgba(200,80,40,.1);border:1px solid rgba(200,80,40,.3);color:#E8956A;}
 
-/* ANALYSIS CARDS 2-col inside dash panel */
-.rc-group{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
-.rc{background:rgba(22,40,22,.55);border:1px solid rgba(100,150,100,.14);border-radius:8px;padding:9px 11px;}
-.rc-k{font-size:.72rem;color:rgba(143,175,138,.72);letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}
-.rc-v{font-size:.9rem;color:#EDE8D8;line-height:1.4;}
+/* ANALYSIS CARDS — single col inside panel */
+.rc-group{display:flex;flex-direction:column;gap:6px;}
+.rc{background:rgba(18,32,18,.6);border:1px solid rgba(100,150,100,.15);border-radius:8px;padding:9px 12px;}
+.rc-k{font-size:.68rem;color:rgba(143,175,138,.65);letter-spacing:.09em;text-transform:uppercase;margin-bottom:3px;}
+.rc-v{font-size:.9rem;color:#EDE8D8;line-height:1.45;}
 
 /* SECTION HEADERS */
-.st{font-size:.75rem;font-weight:700;color:#8FAF8A;letter-spacing:.13em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin-bottom:7px;}
+.st{font-size:.72rem;font-weight:700;color:#8FAF8A;letter-spacing:.14em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin-bottom:8px;}
 .st::after{content:'';flex:1;height:1px;background:rgba(100,150,100,.15);}
 
 /* STRENGTHS */
 .tag-row{display:flex;flex-wrap:wrap;gap:5px;}
-.tag-g{padding:4px 11px;border-radius:10px;font-size:.83rem;background:rgba(76,175,80,.07);border:1px solid rgba(76,175,80,.17);color:#81C784;}
+.tag-g{padding:5px 12px;border-radius:10px;font-size:.85rem;background:rgba(76,175,80,.07);border:1px solid rgba(76,175,80,.18);color:#81C784;line-height:1.35;}
 
 /* TIPS */
 .tips{list-style:none;}
-.tips li{padding:6px 0;border-bottom:1px solid rgba(100,150,100,.09);font-size:.88rem;color:#BAD0BA;display:flex;gap:8px;line-height:1.5;}
+.tips li{padding:7px 0;border-bottom:1px solid rgba(100,150,100,.1);font-size:.9rem;color:#BAD0BA;display:flex;gap:9px;line-height:1.5;}
 .tips li:last-child{border-bottom:none;}
-.tips li span{color:#C8A84B;flex-shrink:0;}
+.tips li span{color:#C8A84B;flex-shrink:0;font-weight:700;}
 
 /* FACT */
-.fact{background:rgba(200,168,75,.04);border:1px solid rgba(200,168,75,.13);border-radius:8px;padding:10px 13px;font-size:.88rem;color:#C8D8A8;line-height:1.55;}
+.fact{background:rgba(200,168,75,.05);border:1px solid rgba(200,168,75,.15);border-radius:9px;padding:11px 14px;font-size:.9rem;color:#C8D8A8;line-height:1.6;}
 
-/* META */
+/* META GRID — 2 col inside panel */
 .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
-.mc{background:rgba(16,28,16,.6);border:1px solid rgba(100,150,100,.12);border-radius:7px;padding:7px 10px;}
-.mc-k{font-size:.7rem;color:rgba(143,175,138,.7);letter-spacing:.07em;text-transform:uppercase;margin-bottom:3px;}
-.mc-v{font-size:.88rem;color:#EDE8D8;word-break:break-word;line-height:1.35;}
+.mc{background:rgba(14,24,14,.7);border:1px solid rgba(100,150,100,.13);border-radius:7px;padding:7px 10px;}
+.mc-k{font-size:.65rem;color:rgba(143,175,138,.6);letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}
+.mc-v{font-size:.88rem;color:#EDE8D8;word-break:break-word;line-height:1.4;}
 
 /* SOCIAL DOCK (left panel) */
 .share-dock{padding:0 16px 14px;border-top:1px solid rgba(100,150,100,.1);}
@@ -1607,25 +1614,30 @@ export default function AvianLens() {
                       const disp = selDisplay;
                       return (
                         <>
-                          {/* ROW 1: Image left | Species + Score right */}
+                          {/* ── FULL-WIDTH IMAGE ── */}
+                          <div className="img-strip">
+                            <img src={selImg.dataUrl} alt={selImg.name} className="prev-img"
+                              onClick={()=>setLightbox({src:selImg.dataUrl,name:selImg.name,species:a.species})}/>
+                            {/* Compact metadata bar under image */}
+                            <div className="img-meta-bar">
+                              {(selImg.exif?.make||selImg.exif?.model) && (
+                                <div className="imb"><span className="imb-k">📷</span><span className="imb-v">{selImg.exif.make||""} {selImg.exif.model||""}</span></div>
+                              )}
+                              {(selImg.exif?.dateTimeOriginal||selImg.exif?.dateTime) && (
+                                <div className="imb"><span className="imb-k">🕐</span><span className="imb-v">{selImg.exif.dateTimeOriginal||selImg.exif.dateTime}</span></div>
+                              )}
+                              {selImg.exif?.iso && <div className="imb"><span className="imb-k">ISO</span><span className="imb-v">{selImg.exif.iso}</span></div>}
+                              {selImg.exif?.exposureTime && <div className="imb"><span className="imb-k">⏱</span><span className="imb-v">{selImg.exif.exposureTime}</span></div>}
+                              {selImg.exif?.focalLength && <div className="imb"><span className="imb-k">🔭</span><span className="imb-v">{selImg.exif.focalLength}</span></div>}
+                              {location && <div className="imb"><span className="imb-k">📍</span><span className="imb-v">{location}</span></div>}
+                              <div className="imb"><span className="imb-k">📁</span><span className="imb-v">{selImg.size}</span></div>
+                            </div>
+                          </div>
+
+                          {/* ── 3-COLUMN INFO GRID ── */}
                           <div className="dash-top">
 
-                            {/* LEFT: image */}
-                            <div className="img-panel">
-                              <img src={selImg.dataUrl} alt={selImg.name} className="prev-img"
-                                onClick={()=>setLightbox({src:selImg.dataUrl,name:selImg.name,species:a.species})}/>
-                              {/* Metadata strip below image */}
-                              <div className="mgrid" style={{marginTop:8}}>
-                                <div className="mc"><div className="mc-k">📷 Camera</div><div className="mc-v">{selImg.exif?.make||"—"} {selImg.exif?.model||""}</div></div>
-                                <div className="mc"><div className="mc-k">🕐 Taken</div><div className="mc-v">{selImg.exif?.dateTimeOriginal||selImg.exif?.dateTime||"—"}</div></div>
-                                <div className="mc"><div className="mc-k">⚙️ ISO</div><div className="mc-v">{selImg.exif?.iso||"—"}</div></div>
-                                <div className="mc"><div className="mc-k">⏱ Exposure</div><div className="mc-v">{selImg.exif?.exposureTime||"—"}</div></div>
-                                <div className="mc"><div className="mc-k">🔭 Focal</div><div className="mc-v">{selImg.exif?.focalLength||"—"}</div></div>
-                                <div className="mc"><div className="mc-k">📍 Location</div><div className="mc-v">{location||"—"}</div></div>
-                              </div>
-                            </div>
-
-                            {/* RIGHT: species + score */}
+                            {/* COL 1: Species ID */}
                             <div className="sp-hero">
                               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
                                 <div className="sp-eyebrow">Species Identified</div>
@@ -1757,8 +1769,12 @@ export default function AvianLens() {
                                 </button>
                               )}
 
-                              {/* Score */}
-                              <div className="score-inline">
+                            </div>{/* end COL 1: species */}
+
+                            {/* COL 2: Photo Score + Analysis */}
+                            <div className="dash-col">
+                              {/* Score block */}
+                              <div className="score-block">
                                 <div className="score-big" style={{color:scoreColor(a.qualityScore)}}>{a.qualityScore}</div>
                                 <div className="score-info">
                                   <div className="score-grade" style={{color:scoreColor(a.qualityScore)}}>{a.qualityGrade}</div>
@@ -1769,28 +1785,23 @@ export default function AvianLens() {
                                 </div>
                               </div>
 
-                              {/* Photo analysis cards 2x2 */}
-                              <div className="st" style={{marginTop:4}}>Photo Analysis</div>
+                              {/* Photo analysis */}
+                              <div className="st">📷 Photo Analysis</div>
                               <div className="rc-group">
                                 {a.lighting       && <div className="rc"><div className="rc-k">💡 Lighting</div><div className="rc-v">{a.lighting}</div></div>}
                                 {a.composition    && <div className="rc"><div className="rc-k">🖼 Composition</div><div className="rc-v">{a.composition}</div></div>}
-                                {a.focusSharpness && <div className="rc"><div className="rc-k">🔍 Focus</div><div className="rc-v">{a.focusSharpness}</div></div>}
+                                {a.focusSharpness && <div className="rc"><div className="rc-k">🔍 Focus & Sharpness</div><div className="rc-v">{a.focusSharpness}</div></div>}
                                 {a.behavior       && <div className="rc"><div className="rc-k">🐦 Behavior</div><div className="rc-v">{a.behavior}</div></div>}
                               </div>
-                            </div>
-                          </div>
 
-                          {/* ROW 2: Strengths + Fact left | Tips right */}
-                          <div className="dash-bot">
-                            <div className="dash-col">
+                              {/* Strengths */}
                               {a.strengths?.length > 0 && <>
                                 <div className="st">✦ Strengths</div>
                                 <div className="tag-row">{a.strengths.map((s,i)=><span key={i} className="tag-g">✓ {s}</span>)}</div>
                               </>}
-                              {a.interestingFact && (
-                                <div className="fact">🔬 <strong style={{color:"#C8A84B"}}>Did you know?</strong> {a.interestingFact}</div>
-                              )}
-                            </div>
+                            </div>{/* end COL 2 */}
+
+                            {/* COL 3: Tips + Fact */}
                             <div className="dash-col">
                               {a.improvements?.length > 0 && <>
                                 <div className="st">→ Photographer Tips</div>
@@ -1798,8 +1809,13 @@ export default function AvianLens() {
                                   {a.improvements.map((r,i)=><li key={i}><span>→</span>{r}</li>)}
                                 </ul>
                               </>}
-                            </div>
-                          </div>
+
+                              {a.interestingFact && (
+                                <div className="fact">🔬 <strong style={{color:"#C8A84B"}}>Did you know?</strong> {a.interestingFact}</div>
+                              )}
+                            </div>{/* end COL 3 */}
+
+                          </div>{/* end dash-top 3-col */}
                         </>
                       );
                     })()}
