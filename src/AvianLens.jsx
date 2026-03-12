@@ -148,8 +148,18 @@ const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = 
 // Pass 3 (arbitration → final ID): Claude sees eBird frequency data and must justify overriding it
 
 // Helper: call /api/ebird to get occurrence counts for candidate species
-const fetchEBirdCounts = async (lat, lng, candidates, obsDate = "") => {
+const fetchEBirdCounts = async (lat, lng, candidates, obsDate = "", cachedData = null) => {
   if (!lat || !lng || !candidates.length) return null;
+
+  // If we already have cached regional data, just re-score for this candidate list
+  if (cachedData?.scores) {
+    const scores = {};
+    for (const name of candidates) {
+      scores[name] = cachedData.scores[name] || { observed: false, obsCount: 0, lastSeen: null, rarity: "absent" };
+    }
+    return { ...cachedData, scores };
+  }
+
   try {
     const params = new URLSearchParams({ lat, lng, candidates: candidates.join("|") });
     if (obsDate) params.set("obsDate", obsDate);
@@ -177,6 +187,9 @@ const parseCoords = (loc) => {
   return null;
 };
 
+// ── eBird cache: keyed by "lat|lng|date" to avoid duplicate calls per batch ──
+const _eBirdCache = {};
+
 const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null, obsDate = "") => {
   const progress = (msg) => onProgress && onProgress(msg);
   const fallback = (msg) => ({
@@ -188,157 +201,93 @@ const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = []
     _threePass:true, _eBirdData:null,
   });
 
-  // ── PASS 1: Systematic visual field notes (vision model required) ────────
-  progress("Pass 1 of 3 — Extracting visual field marks…");
-  let fieldNotes;
+  // ── PASS 1+2 MERGED: Vision extracts field notes AND generates candidates in one call ──
+  // Eliminates one full API round-trip vs the old two-pass approach.
+  progress("Pass 1 of 2 — Analysing field marks & generating candidates…");
+  let fieldNotes, candidatesJson;
   try {
-    fieldNotes = await callClaude([{
+    const raw = await callClaude([{
       role: "user",
       content: [
         { type: "image", source: { type: "base64", media_type: mimeType, data: b64 } },
         { type: "text", text:
-`You are a field ornithologist making careful systematic notes about a bird photograph.
+`You are a field ornithologist and senior bird taxonomist in one. Study this photograph carefully.
 Location: ${location || "not specified"}
-Date: ${obsDate || "not specified"}${obsDate ? " — consider expected seasonal plumage, active migrants, and winter/summer residents for this date" : ""}
+Date: ${obsDate || "not specified"}${obsDate ? " — consider seasonal plumage, active migrants, and winter/summer residents" : ""}
 
-Report ONLY what is clearly visible. Use precise field-guide language. Be specific about colors (never "brownish" — say "warm buffy-brown" or "olive-gray"). Format your response as labeled sections:
+Step 1 — Write systematic field notes covering every visible feature.
+Step 2 — Using ONLY those field notes, rank the top 5 most likely species by field-mark match.
+Step 3 — Score the photograph quality.
 
-SIZE: Compare to a known bird (sparrow/robin/pigeon/crow/duck/goose). Note body length and bulk.
-SHAPE: Body profile, neck length, tail length relative to body, wing projection at rest, posture (upright/horizontal).
-HEAD: Crown color and pattern (uniform/streaked/capped), nape, eye color, eye ring (size and color if present), supercilium (present/absent, color, extent), lore color, cheek/ear covert color, chin and throat color.
-BILL: Length relative to head, shape (straight/downcurved/hooked/conical/slender/robust), color upper/lower mandible, tip shape. Bill is often the single most diagnostic feature — be precise.
-BREAST & BELLY: Exact base color, streaking (fine/bold, extent), spotting, barring, or clean. Flank color. Any contrasting bib or gorget.
-BACK & WINGS: Mantle color, scapular pattern, wing bar count and color, tertial edges, rump color if visible, primary projection beyond tertials at rest.
-TAIL: Upper/under-tail color, shape (forked/square/rounded/graduated/pointed), outer tail feather color if different. Any terminal band.
-LEGS & FEET: Color, length relative to body (short/medium/long).
-HABITAT: Perch type (wire/branch/reed/rock/ground/fence/water), vegetation type, open/dense/aquatic.
-BEHAVIOR: Activity (foraging/singing/preening/alert/in-flight), posture, any wing or tail pumping/flicking.
-PHOTO QUALITY: Lighting (front/side/back-lit, harsh/soft), focus (tack-sharp/slightly soft/motion blur), subject fill (small/medium/large), background (clean bokeh/busy), angle (profile/three-quarter/front/rear).
-KEY DIAGNOSTIC MARKS: List the 2–3 features most useful for distinguishing this bird from similar species.` }
-      ]
-    }], model, apiKey, 1000, location);
-  } catch(e) {
-    throw new Error(`Pass 1 failed: ${e.message}`);
-  }
-
-  // ── PASS 2: Generate top 3 candidates with % confidence — NO final ID yet ──
-  progress("Pass 2 of 3 — Generating candidate species…");
-  let candidatesJson;
-  try {
-    const raw = await callClaude([{
-      role: "user",
-      content:
-`You are a senior ornithologist. Based ONLY on the field notes below, generate the TOP 5 most likely species. Do NOT give a final ID yet. Work from the KEY DIAGNOSTIC MARKS outward — bill shape and size, wing pattern, and head markings are usually most reliable. Ignore location bias; rely solely on field marks.
-
-FIELD NOTES:
-${fieldNotes}
-
-Location: ${location || "unknown"}
-Date: ${obsDate || "unknown"}
-
-Rules:
-- Confidence scores must sum to 100
-- Never invent marks not present in the field notes
-- "concern" must name a real field mark mismatch, not just "unlikely"
-- Consider subspecies and age/sex variants if they fit better
-
-Return ONLY valid JSON — no text outside the JSON:
+Return ONLY valid JSON — no text outside:
 {
+  "fieldNotes": "SIZE: ... SHAPE: ... HEAD: ... BILL: ... BREAST: ... BACK/WINGS: ... TAIL: ... LEGS: ... HABITAT: ... BEHAVIOR: ... PHOTO QUALITY: ... KEY DIAGNOSTIC MARKS: ...",
   "candidates": [
-    {
-      "species": "Common name",
-      "scientificName": "Genus species",
-      "confidence": 60,
-      "keyMarks": "Specific field marks from the notes that clinch this ID",
-      "concern": "One genuine field mark mismatch or ambiguity, or empty string"
-    },
-    {
-      "species": "Second candidate",
-      "scientificName": "Genus species",
-      "confidence": 20,
-      "keyMarks": "Marks supporting this alternative",
-      "concern": "What rules it out or makes it less likely"
-    },
-    {
-      "species": "Third candidate",
-      "scientificName": "Genus species",
-      "confidence": 10,
-      "keyMarks": "Supporting marks",
-      "concern": "Main reason it ranks lower"
-    },
-    {
-      "species": "Fourth candidate",
-      "scientificName": "Genus species",
-      "confidence": 7,
-      "keyMarks": "Supporting marks",
-      "concern": "Main reason it ranks lower"
-    },
-    {
-      "species": "Fifth candidate",
-      "scientificName": "Genus species",
-      "confidence": 3,
-      "keyMarks": "Supporting marks",
-      "concern": "Main reason it ranks lower"
-    }
+    { "species": "Common name", "scientificName": "Genus species", "confidence": 60, "keyMarks": "Specific marks clinching this ID", "concern": "Any genuine mismatch or empty string" },
+    { "species": "Second", "scientificName": "Genus species", "confidence": 20, "keyMarks": "Supporting marks", "concern": "Why it ranks lower" },
+    { "species": "Third",  "scientificName": "Genus species", "confidence": 10, "keyMarks": "Supporting marks", "concern": "Why it ranks lower" },
+    { "species": "Fourth", "scientificName": "Genus species", "confidence": 7,  "keyMarks": "Supporting marks", "concern": "Why it ranks lower" },
+    { "species": "Fifth",  "scientificName": "Genus species", "confidence": 3,  "keyMarks": "Supporting marks", "concern": "Why it ranks lower" }
   ],
-  "qualityScore": <1-10 integer based on photo quality>,
+  "qualityScore": <1-10 integer>,
   "qualityGrade": "Masterpiece/Excellent/Good/Fair/Poor",
   "summary": "One sentence describing the photograph",
   "lighting": "Lighting quality and direction",
   "composition": "Framing and subject placement",
-  "focusSharpness": "Sharpness and any motion blur",
+  "focusSharpness": "Sharpness and motion blur",
   "behavior": "What the bird is doing",
   "strengths": ["strength 1", "strength 2"],
-  "improvements": ["tip 1", "tip 2", "tip 3"]
-}`
-    }], model, apiKey, 2000, location);
+  "improvements": ["tip 1", "tip 2", "tip 3"],
+  "interestingFact": "One short, genuinely surprising fact about the top candidate species (under 25 words)"
+}
+
+Rules: confidence scores must sum to 100. Never invent marks not in your observations. Concern must cite a real field-mark mismatch.` }
+      ]
+    }], model, apiKey, 1400, location);
     candidatesJson = parseJSON(raw);
+    fieldNotes = candidatesJson.fieldNotes || "";
   } catch(e) {
-    return fallback(`Candidate generation failed: ${e.message}`);
+    return fallback(`Analysis failed: ${e.message}`);
   }
 
   const candidates = candidatesJson.candidates || [];
   const candidateNames = candidates.map(c => c.species).filter(Boolean);
 
-  // ── EBIRD CHECK: Occurrence counts for each candidate ───────────────────
+  // ── EBIRD CHECK: Occurrence counts — cached per (lat, lng, date) across batch ──
   const coords = parseCoords(location);
   let eBirdData = null;
 
   if (coords && candidateNames.length) {
-    progress("eBird — Checking regional occurrence data…");
-    eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames, obsDate);
+    const cacheKey = `${coords.lat.toFixed(2)}|${coords.lng.toFixed(2)}|${obsDate || ""}`;
+    if (_eBirdCache[cacheKey]) {
+      // Re-use cached regional data; just fetch counts for this image's specific candidates
+      const cached = _eBirdCache[cacheKey];
+      progress("eBird — Using cached regional data…");
+      eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames, obsDate, cached);
+    } else {
+      progress("eBird — Checking regional occurrence data…");
+      eBirdData = await fetchEBirdCounts(coords.lat, coords.lng, candidateNames, obsDate);
+      if (eBirdData) _eBirdCache[cacheKey] = eBirdData;
+    }
   }
 
   // ── GEO PATH: When location + eBird data available, pick the best eBird-confirmed candidate ──
-  // If geo is provided and eBird has data, use it directly — no need for Pass 3 arbitration.
   if (coords && eBirdData?.scores && !correctionHint) {
-    // Score = visual confidence × eBird presence weight.
-    // Visual confidence is NEVER overridden by obsCount alone.
-    // A High-confidence rare species beats a Low-confidence common one.
     const scored = candidates.map(c => {
       const s = eBirdData.scores[c.species];
       const obsCount = (s?.observed && s.obsCount) ? s.obsCount : 0;
       const observed = obsCount > 0;
-
-      // eBird multiplier: present=1.0–1.3 boost, absent=0.5 penalty (not zero — visual can override)
       const eBirdMult = !observed ? 0.5
         : obsCount > 20 ? 1.3
         : obsCount > 4  ? 1.15
-        : 1.0; // rare but present: no penalty
-
-      // Visual confidence score (Pass 2 percentage, 0–100)
+        : 1.0;
       const visualScore = typeof c.confidence === "number" ? c.confidence : 50;
       const combinedScore = visualScore * eBirdMult;
-
       return { ...c, obsCount, observed, eBirdMult, visualScore, combinedScore };
     });
 
-    // Pick best by combined score. If top visual candidate has High confidence (>65%)
-    // and eBird has it as absent, still trust vision but flag it as unusual.
     scored.sort((a, b) => b.combinedScore - a.combinedScore);
     const best = scored[0];
-
-    // Determine if eBird meaningfully changed the pick vs pure visual rank
     const visualTop = candidates[0];
     const eBirdChanged = best.species !== visualTop.species;
 
@@ -348,29 +297,6 @@ Return ONLY valid JSON — no text outside the JSON:
       : "occasionally seen in area";
 
     progress("eBird — Species confirmed from regional data…");
-
-    // Build quality/photo fields from Pass 2
-    const photoFields = {
-      qualityScore: candidatesJson.qualityScore,
-      qualityGrade: candidatesJson.qualityGrade,
-      summary: candidatesJson.summary,
-      lighting: candidatesJson.lighting,
-      composition: candidatesJson.composition,
-      focusSharpness: candidatesJson.focusSharpness,
-      behavior: candidatesJson.behavior,
-      strengths: candidatesJson.strengths,
-      improvements: candidatesJson.improvements,
-    };
-
-    // Generate interesting fact via a lightweight call (still uses the model)
-    let interestingFact = "";
-    try {
-      const factRaw = await callClaude([{
-        role: "user",
-        content: `Give ONE short, fascinating fact about the ${best.species} (under 25 words). Return only the fact, no preamble.`
-      }], model, apiKey, 80, "");
-      interestingFact = factRaw.trim().replace(/^"|"$/g,"");
-    } catch(_) {}
 
     return {
       species: best.species,
@@ -383,10 +309,18 @@ Return ONLY valid JSON — no text outside the JSON:
         ? `${best.species} is ${rarity}; ${eBirdData.totalSpecies} species reported within 75km (${eBirdData.dateLabel || "last 30 days"}).${eBirdChanged ? ` eBird adjusted rank from visual #1 (${visualTop.species}).` : ""}`
         : `${best.species} not recently recorded nearby — identification based on visual field marks alone.`,
       userSuggestionVerdict: undefined,
-      interestingFact,
-      ...photoFields,
+      interestingFact: candidatesJson.interestingFact || "",
+      qualityScore: candidatesJson.qualityScore,
+      qualityGrade: candidatesJson.qualityGrade,
+      summary: candidatesJson.summary,
+      lighting: candidatesJson.lighting,
+      composition: candidatesJson.composition,
+      focusSharpness: candidatesJson.focusSharpness,
+      behavior: candidatesJson.behavior,
+      strengths: candidatesJson.strengths,
+      improvements: candidatesJson.improvements,
       _threePass: true,
-      _eBirdPrimary: true,   // flag that eBird drove this ID
+      _eBirdPrimary: true,
       _candidates: candidates,
       _eBirdData: eBirdData,
     };
@@ -455,7 +389,7 @@ Match: ${vResult.matchCount} marks | Mismatch: ${vResult.mismatchCount} marks
   }
 
   // ── PASS 3: Final arbitration — Claude must reconcile vision + eBird + verification ──
-  progress(correctionHint ? "Pass 3 of 3 — Arbitrating with verification results…" : "Pass 3 of 3 — eBird-verified final identification…");
+  progress(correctionHint ? "Pass 2 of 2 — Arbitrating with verification results…" : "Pass 2 of 2 — eBird-verified final identification…");
   let txt;
   try {
     txt = await callClaude([{
@@ -463,12 +397,12 @@ Match: ${vResult.matchCount} marks | Mismatch: ${vResult.mismatchCount} marks
       content:
 `You are a senior ornithologist making a final, evidence-based species identification. You are known for accuracy over agreeableness. You have three sources of evidence — weight them in this order: (1) field marks, (2) date/season context, (3) eBird regional frequency.
 
-FIELD NOTES (Pass 1 — systematic visual extraction):
+FIELD NOTES (merged Pass 1 — systematic visual extraction):
 ${fieldNotes}
 
 DATE / SEASON CONTEXT: ${obsDate || "unknown"}${obsDate ? " — factor in expected plumage, migration status, and seasonal abundance" : ""}
 
-BLIND VISUAL CANDIDATES (Pass 2 — ranked by field marks only, before any location bias):
+VISUAL CANDIDATES (merged Pass 1 — ranked by field marks only, before any location bias):
 ${candidates.map((c,i) => (i+1)+". "+c.species+" — "+c.confidence+"% visual confidence\n   ✓ "+c.keyMarks+"\n   ✗ Concern: "+(c.concern||"none")).join("\n")}
 ${eBirdSummary || "\nNo eBird location data — base ID on field marks and season alone.\n"}${verificationSummary ? `
 ${verificationSummary}` : ""}
@@ -489,8 +423,7 @@ Return ONLY valid JSON — no text outside:
   "alternativesConsidered": "Why each runner-up was ruled out — cite specific mark mismatches",
   "userSuggestionVerdict": "accepted|rejected|insufficient_evidence",
   "eBirdVerdict": "confirmed|unusual|overridden|no_data",
-  "eBirdNote": "One sentence on eBird data — ONLY if eBird data was provided. Empty string if not.",
-  "interestingFact": "One short, genuinely surprising fact about this species (not just diet or range)"
+  "eBirdNote": "One sentence on eBird data — ONLY if eBird data was provided. Empty string if not."
 }`
     }], model, apiKey, 900, location);
   } catch(e) {
@@ -522,7 +455,7 @@ Return ONLY valid JSON — no text outside:
       eBirdVerdict: id.eBirdVerdict,
       eBirdNote: id.eBirdNote,
       userSuggestionVerdict: id.userSuggestionVerdict,
-      interestingFact: id.interestingFact,
+      interestingFact: id.interestingFact || candidatesJson.interestingFact || "",
       // Photo quality from Pass 2
       qualityScore: candidatesJson.qualityScore,
       qualityGrade: candidatesJson.qualityGrade,
@@ -1601,7 +1534,7 @@ export default function AvianLens() {
                       <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
                         <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
                         <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
-                        <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>{progressMsg || "Pass 1 → eBird → Pass 3…"}</div>
+                        <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>{progressMsg || "Pass 1 → eBird → Pass 2…"}</div>
                       </div>
                     )}
 
