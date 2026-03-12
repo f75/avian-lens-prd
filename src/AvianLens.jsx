@@ -783,81 +783,86 @@ body{background:#060f07;}
 .empty-t{font-family:'Playfair Display',serif;font-size:1.35rem;color:rgba(143,175,138,.42);}
 
 /* NAV BAR */
-.img-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.img-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .navbtn{background:rgba(200,168,75,.08);border:1px solid rgba(200,168,75,.2);color:#C8A84B;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.9rem;transition:all .2s;}
 .navbtn:hover{background:rgba(200,168,75,.2);}
 .navbtn:disabled{opacity:.22;cursor:not-allowed;}
 .dots{display:flex;gap:4px;}
 .dot{width:7px;height:7px;border-radius:50%;border:none;cursor:pointer;padding:0;transition:background .2s;}
 
-/* ── MAIN LAYOUT: image top, 3-col info below ── */
-.dash-top{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;align-items:start;}
-@media(max-width:1100px){.dash-top{grid-template-columns:1fr 1fr;}}
-@media(max-width:760px){.dash-top{grid-template-columns:1fr;}}
-.dash-bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
-@media(max-width:1100px){.dash-bot{grid-template-columns:1fr 1fr;}}
-@media(max-width:760px){.dash-bot{grid-template-columns:1fr;}}
-.dash-col{display:flex;flex-direction:column;gap:8px;}
+/* ── LAYOUT C: Sidebar image + dense right content ── */
+.lc-wrap{display:grid;grid-template-columns:260px 1fr;gap:12px;align-items:start;}
+@media(max-width:900px){.lc-wrap{grid-template-columns:1fr;}}
 
-/* Full-width image strip */
-.img-strip{margin-bottom:10px;position:relative;}
-.prev-img{width:100%;height:auto;max-height:min(52vh,480px);object-fit:contain;border-radius:12px;background:rgba(10,20,10,.8);display:block;cursor:zoom-in;}
-/* Metadata row overlaid at bottom of image */
-.img-meta-bar{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
-.imb{display:flex;align-items:center;gap:5px;background:rgba(14,26,14,.85);border:1px solid rgba(100,150,100,.16);border-radius:6px;padding:4px 9px;}
-.imb-k{font-size:.65rem;color:rgba(143,175,138,.55);text-transform:uppercase;letter-spacing:.07em;white-space:nowrap;}
-.imb-v{font-size:.78rem;color:#EDE8D8;font-weight:500;}
+/* Left sidebar: image fills height, meta below */
+.lc-imgcol{display:flex;flex-direction:column;gap:7px;position:sticky;top:0;}
+.prev-img{width:100%;height:auto;object-fit:cover;border-radius:11px;background:rgba(10,20,10,.8);display:block;cursor:zoom-in;}
+.lc-meta{display:flex;flex-direction:column;gap:4px;}
+.imb{display:flex;align-items:center;gap:6px;background:rgba(14,24,14,.8);border:1px solid rgba(100,150,100,.14);border-radius:6px;padding:5px 9px;}
+.imb-k{font-size:.62rem;color:rgba(143,175,138,.5);text-transform:uppercase;letter-spacing:.07em;white-space:nowrap;flex-shrink:0;}
+.imb-v{font-size:.78rem;color:#EDE8D8;font-weight:500;word-break:break-all;}
 
-/* SPECIES HERO panel */
+/* Right: stacked content sections */
+.lc-right{display:flex;flex-direction:column;gap:10px;}
+
+/* Species + score banner */
 .sp-hero{background:linear-gradient(135deg,rgba(24,44,22,.97),rgba(14,26,14,.97));border:1px solid rgba(100,150,100,.24);border-radius:11px;padding:14px 16px;position:relative;overflow:hidden;}
 .sp-hero::before{content:'';position:absolute;top:-24px;right:-14px;width:100px;height:100px;background:radial-gradient(circle,rgba(200,168,75,.1),transparent 68%);}
-.sp-eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.16em;color:rgba(143,175,138,.55);text-transform:uppercase;margin-bottom:3px;}
-.sp-name{font-family:'Playfair Display',serif;font-size:clamp(1.3rem,2.8vw,1.9rem);font-weight:700;color:#EDE8D8;line-height:1.05;margin-bottom:1px;}
-.sp-sci{font-family:'Playfair Display',serif;font-style:italic;font-size:1rem;color:#8FAF8A;margin-bottom:9px;}
-.sp-badges{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:10px;}
+.sp-eyebrow{font-size:.66rem;font-weight:700;letter-spacing:.16em;color:rgba(143,175,138,.55);text-transform:uppercase;margin-bottom:3px;}
+.sp-name{font-family:'Playfair Display',serif;font-size:clamp(1.4rem,2.6vw,1.9rem);font-weight:700;color:#EDE8D8;line-height:1.05;margin-bottom:2px;}
+.sp-sci{font-family:'Playfair Display',serif;font-style:italic;font-size:.95rem;color:#8FAF8A;margin-bottom:8px;}
+.sp-badges{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:8px;}
 .conf-chip{padding:4px 11px;border-radius:10px;font-size:.78rem;font-weight:700;letter-spacing:.04em;background:rgba(200,168,75,.1);border:1px solid rgba(200,168,75,.28);color:#C8A84B;}
 
-/* SCORE BLOCK */
-.score-block{display:flex;align-items:center;gap:12px;background:rgba(8,18,8,.6);border:1px solid rgba(100,150,100,.2);border-radius:9px;padding:10px 14px;margin-bottom:10px;}
-.score-big{font-family:'Playfair Display',serif;font-size:3rem;font-weight:700;line-height:1;flex-shrink:0;}
-.score-info{flex:1;}
-.score-grade{font-size:1rem;font-weight:700;margin-bottom:4px;}
-.score-bar-track{width:100%;height:5px;background:rgba(22,40,22,.8);border-radius:3px;overflow:hidden;}
-.score-bar-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.4,0,.2,1);}
-.score-summary{font-size:.88rem;color:#BAD0BA;margin-top:5px;line-height:1.5;}
+/* Score inline — sits to the right of species name in banner */
+.score-inline{display:flex;align-items:center;gap:9px;background:rgba(8,18,8,.55);border:1px solid rgba(100,150,100,.18);border-radius:8px;padding:8px 12px;flex-shrink:0;}
+.score-big{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:700;line-height:1;}
+.score-info{min-width:0;}
+.score-grade{font-size:.9rem;font-weight:700;margin-bottom:3px;}
+.score-bar-track{width:100%;height:4px;background:rgba(22,40,22,.8);border-radius:2px;overflow:hidden;}
+.score-bar-fill{height:100%;border-radius:2px;transition:width .8s cubic-bezier(.4,0,.2,1);}
+.score-summary{font-size:.82rem;color:#BAD0BA;margin-top:4px;line-height:1.45;}
 
 /* GATE BADGE */
 .gate-pass{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:18px;font-size:.75rem;font-weight:700;background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);color:#81C784;}
 .gate-fail{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:18px;font-size:.75rem;font-weight:700;background:rgba(200,80,40,.1);border:1px solid rgba(200,80,40,.3);color:#E8956A;}
 
-/* ANALYSIS CARDS — single col inside panel */
-.rc-group{display:flex;flex-direction:column;gap:6px;}
+/* 2×2 analysis grid */
+.rc-group{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
 .rc{background:rgba(18,32,18,.6);border:1px solid rgba(100,150,100,.15);border-radius:8px;padding:9px 12px;}
-.rc-k{font-size:.68rem;color:rgba(143,175,138,.65);letter-spacing:.09em;text-transform:uppercase;margin-bottom:3px;}
-.rc-v{font-size:.9rem;color:#EDE8D8;line-height:1.45;}
+.rc-k{font-size:.67rem;color:rgba(143,175,138,.62);letter-spacing:.09em;text-transform:uppercase;margin-bottom:3px;}
+.rc-v{font-size:.88rem;color:#EDE8D8;line-height:1.45;}
 
 /* SECTION HEADERS */
-.st{font-size:.72rem;font-weight:700;color:#8FAF8A;letter-spacing:.14em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin-bottom:8px;}
+.st{font-size:.7rem;font-weight:700;color:#8FAF8A;letter-spacing:.14em;text-transform:uppercase;display:flex;align-items:center;gap:7px;margin-bottom:8px;}
 .st::after{content:'';flex:1;height:1px;background:rgba(100,150,100,.15);}
+
+/* Tips + strengths side by side */
+.lc-bottom{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+@media(max-width:700px){.lc-bottom{grid-template-columns:1fr;}}
 
 /* STRENGTHS */
 .tag-row{display:flex;flex-wrap:wrap;gap:5px;}
-.tag-g{padding:5px 12px;border-radius:10px;font-size:.85rem;background:rgba(76,175,80,.07);border:1px solid rgba(76,175,80,.18);color:#81C784;line-height:1.35;}
+.tag-g{padding:5px 12px;border-radius:10px;font-size:.84rem;background:rgba(76,175,80,.07);border:1px solid rgba(76,175,80,.18);color:#81C784;line-height:1.35;}
 
 /* TIPS */
 .tips{list-style:none;}
-.tips li{padding:7px 0;border-bottom:1px solid rgba(100,150,100,.1);font-size:.9rem;color:#BAD0BA;display:flex;gap:9px;line-height:1.5;}
+.tips li{padding:6px 0;border-bottom:1px solid rgba(100,150,100,.1);font-size:.88rem;color:#BAD0BA;display:flex;gap:8px;line-height:1.5;}
 .tips li:last-child{border-bottom:none;}
 .tips li span{color:#C8A84B;flex-shrink:0;font-weight:700;}
 
 /* FACT */
-.fact{background:rgba(200,168,75,.05);border:1px solid rgba(200,168,75,.15);border-radius:9px;padding:11px 14px;font-size:.9rem;color:#C8D8A8;line-height:1.6;}
+.fact{background:rgba(200,168,75,.05);border:1px solid rgba(200,168,75,.15);border-radius:9px;padding:10px 13px;font-size:.88rem;color:#C8D8A8;line-height:1.6;}
 
-/* META GRID — 2 col inside panel */
+/* unused but kept for any leftover refs */
 .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
 .mc{background:rgba(14,24,14,.7);border:1px solid rgba(100,150,100,.13);border-radius:7px;padding:7px 10px;}
 .mc-k{font-size:.65rem;color:rgba(143,175,138,.6);letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;}
 .mc-v{font-size:.88rem;color:#EDE8D8;word-break:break-word;line-height:1.4;}
+.img-strip{display:none;}
+.dash-top{display:none;}
+.dash-bot{display:none;}
+.dash-col{display:flex;flex-direction:column;gap:8px;}
 
 /* SOCIAL DOCK (left panel) */
 .share-dock{padding:0 16px 14px;border-top:1px solid rgba(100,150,100,.1);}
@@ -1608,18 +1613,18 @@ export default function AvianLens() {
                       </div>
                     )}
 
-                    {/* ── DASHBOARD RESULTS ── */}
+                    {/* ── DASHBOARD RESULTS — LAYOUT C ── */}
                     {selImg.analysis && curIdx !== selIdx && (() => {
                       const a = selImg.analysis;
                       const disp = selDisplay;
                       return (
-                        <>
-                          {/* ── FULL-WIDTH IMAGE ── */}
-                          <div className="img-strip">
+                        <div className="lc-wrap">
+
+                          {/* ── LEFT SIDEBAR: image + metadata ── */}
+                          <div className="lc-imgcol">
                             <img src={selImg.dataUrl} alt={selImg.name} className="prev-img"
                               onClick={()=>setLightbox({src:selImg.dataUrl,name:selImg.name,species:a.species})}/>
-                            {/* Compact metadata bar under image */}
-                            <div className="img-meta-bar">
+                            <div className="lc-meta">
                               {(selImg.exif?.make||selImg.exif?.model) && (
                                 <div className="imb"><span className="imb-k">📷</span><span className="imb-v">{selImg.exif.make||""} {selImg.exif.model||""}</span></div>
                               )}
@@ -1627,123 +1632,106 @@ export default function AvianLens() {
                                 <div className="imb"><span className="imb-k">🕐</span><span className="imb-v">{selImg.exif.dateTimeOriginal||selImg.exif.dateTime}</span></div>
                               )}
                               {selImg.exif?.iso && <div className="imb"><span className="imb-k">ISO</span><span className="imb-v">{selImg.exif.iso}</span></div>}
-                              {selImg.exif?.exposureTime && <div className="imb"><span className="imb-k">⏱</span><span className="imb-v">{selImg.exif.exposureTime}</span></div>}
-                              {selImg.exif?.focalLength && <div className="imb"><span className="imb-k">🔭</span><span className="imb-v">{selImg.exif.focalLength}</span></div>}
+                              {selImg.exif?.exposureTime && <div className="imb"><span className="imb-k">⏱ Exp</span><span className="imb-v">{selImg.exif.exposureTime}</span></div>}
+                              {selImg.exif?.focalLength && <div className="imb"><span className="imb-k">🔭 Focal</span><span className="imb-v">{selImg.exif.focalLength}</span></div>}
                               {location && <div className="imb"><span className="imb-k">📍</span><span className="imb-v">{location}</span></div>}
+                              {obsDate && <div className="imb"><span className="imb-k">📅</span><span className="imb-v">{obsDate}</span></div>}
                               <div className="imb"><span className="imb-k">📁</span><span className="imb-v">{selImg.size}</span></div>
                             </div>
                           </div>
 
-                          {/* ── 3-COLUMN INFO GRID ── */}
-                          <div className="dash-top">
+                          {/* ── RIGHT: all analysis content ── */}
+                          <div className="lc-right">
 
-                            {/* COL 1: Species ID */}
+                            {/* SPECIES BANNER with score inline */}
                             <div className="sp-hero">
-                              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
-                                <div className="sp-eyebrow">Species Identified</div>
-                                {a._threePass && (
-                                  <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.25)",color:"#81C784",letterSpacing:".06em"}}>
-                                    {a._eBirdPrimary ? "📍 eBird + Vision" : "🔬 3-PASS + eBird"}
-                                  </span>
-                                )}
+                              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
+                                    <div className="sp-eyebrow">Species Identified</div>
+                                    {a._threePass && (
+                                      <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.25)",color:"#81C784",letterSpacing:".06em"}}>
+                                        {a._eBirdPrimary ? "📍 eBird + Vision" : "🔬 3-PASS + eBird"}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="sp-name">{a.species}</div>
+                                  {a.scientificName && <div className="sp-sci">{a.scientificName}</div>}
+                                  <div className="sp-badges">
+                                    <span className="conf-chip">{a.confidence} confidence</span>
+                                    {disp?._filtered ? <span className="gate-fail">⛔ Filtered</span> : <span className="gate-pass">✓ Passes</span>}
+                                    {a._eBirdPrimary && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.18)",border:"1px solid rgba(33,150,243,.5)",color:"#42A5F5"}}>📍 ID via eBird</span>}
+                                    {!a._eBirdPrimary && a.eBirdVerdict==="confirmed" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>🗺 eBird confirmed</span>}
+                                    {a.eBirdVerdict==="unusual" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Unusual for area</span>}
+                                    {a.eBirdVerdict==="overridden" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(156,39,176,.1)",border:"1px solid rgba(156,39,176,.3)",color:"#CE93D8"}}>🔄 eBird revised ID</span>}
+                                    {a._correctionHint && a.userSuggestionVerdict==="accepted" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.3)",color:"#81C784"}}>✓ Correction verified</span>}
+                                    {a._correctionHint && a.userSuggestionVerdict==="rejected" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(244,67,54,.1)",border:"1px solid rgba(244,67,54,.3)",color:"#EF9A9A"}}>✗ Correction rejected</span>}
+                                    {a._correctionHint && a.userSuggestionVerdict==="insufficient_evidence" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Correction uncertain</span>}
+                                    {a._correctionHint && !a.userSuggestionVerdict && <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>✏ Re-analyzed</span>}
+                                  </div>
+                                </div>
+                                {/* Score — tight block top-right of banner */}
+                                <div className="score-inline" style={{flexShrink:0}}>
+                                  <div className="score-big" style={{color:scoreColor(a.qualityScore)}}>{a.qualityScore}</div>
+                                  <div className="score-info" style={{minWidth:70}}>
+                                    <div className="score-grade" style={{color:scoreColor(a.qualityScore)}}>{a.qualityGrade}</div>
+                                    <div className="score-bar-track" style={{width:70}}>
+                                      <div className="score-bar-fill" style={{width:`${a.qualityScore*10}%`,background:scoreColor(a.qualityScore)}}/>
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
-                              <div className="sp-name">{a.species}</div>
-                              {a.scientificName && <div className="sp-sci">{a.scientificName}</div>}
-                              <div className="sp-badges">
-                                <span className="conf-chip">{a.confidence} confidence</span>
-                                {disp?._filtered
-                                  ? <span className="gate-fail">⛔ Filtered</span>
-                                  : <span className="gate-pass">✓ Passes</span>}
-                                {/* eBird verdict badge */}
-                                {a._eBirdPrimary && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.18)",border:"1px solid rgba(33,150,243,.5)",color:"#42A5F5"}}>
-                                    📍 ID via eBird
-                                  </span>
-                                )}
-                                {!a._eBirdPrimary && a.eBirdVerdict === "confirmed" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>
-                                    🗺 eBird confirmed
-                                  </span>
-                                )}
-                                {a.eBirdVerdict === "unusual" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>
-                                    ⚠ Unusual for area
-                                  </span>
-                                )}
-                                {a.eBirdVerdict === "overridden" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(156,39,176,.1)",border:"1px solid rgba(156,39,176,.3)",color:"#CE93D8"}}>
-                                    🔄 eBird revised ID
-                                  </span>
-                                )}
-                                {a._correctionHint && a.userSuggestionVerdict === "accepted" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.3)",color:"#81C784"}}>
-                                    ✓ Correction verified
-                                  </span>
-                                )}
-                                {a._correctionHint && a.userSuggestionVerdict === "rejected" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(244,67,54,.1)",border:"1px solid rgba(244,67,54,.3)",color:"#EF9A9A"}}>
-                                    ✗ Correction rejected — field marks disagree
-                                  </span>
-                                )}
-                                {a._correctionHint && a.userSuggestionVerdict === "insufficient_evidence" && (
-                                  <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>
-                                    ⚠ Correction uncertain
-                                  </span>
-                                )}
-                                {a._correctionHint && !a.userSuggestionVerdict && (
-                                  <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>
-                                    ✏ Re-analyzed with hint
-                                  </span>
-                                )}
-                              </div>
+
+                              {/* Score summary below name row */}
+                              {a.summary && <div className="score-summary" style={{marginBottom:6}}>{a.summary}</div>}
+
+                              {/* ID Reasoning */}
                               {a.identificationReasoning && (
-                                <div style={{marginTop:8,padding:"7px 10px",background:"rgba(200,168,75,.05)",border:"1px solid rgba(200,168,75,.14)",borderRadius:7,fontSize:".75rem",color:"#C8D8A8",lineHeight:1.5}}>
+                                <div style={{padding:"7px 10px",background:"rgba(200,168,75,.05)",border:"1px solid rgba(200,168,75,.14)",borderRadius:7,fontSize:".8rem",color:"#C8D8A8",lineHeight:1.5}}>
                                   🔑 <em>{a.identificationReasoning}</em>
                                 </div>
                               )}
                               {a.alternativesConsidered && (
-                                <div style={{marginTop:5,padding:"6px 10px",background:"rgba(100,150,100,.04)",border:"1px solid rgba(100,150,100,.12)",borderRadius:7,fontSize:".7rem",color:"rgba(186,208,186,.65)",lineHeight:1.45}}>
+                                <div style={{marginTop:5,padding:"6px 10px",background:"rgba(100,150,100,.04)",border:"1px solid rgba(100,150,100,.12)",borderRadius:7,fontSize:".75rem",color:"rgba(186,208,186,.65)",lineHeight:1.45}}>
                                   🔀 <em>{a.alternativesConsidered}</em>
                                 </div>
                               )}
                               {a.eBirdNote && !a.eBirdNote.toLowerCase().includes("no ebird") && !a.eBirdNote.toLowerCase().includes("not available") && !a.eBirdNote.toLowerCase().includes("rests entirely") && !a.eBirdNote.toLowerCase().includes("field marks alone") && !a.eBirdNote.toLowerCase().includes("no frequency") && (
-                                <div style={{marginTop:5,padding:"6px 10px",background:"rgba(33,150,243,.04)",border:"1px solid rgba(33,150,243,.14)",borderRadius:7,fontSize:".7rem",color:"rgba(100,181,246,.8)",lineHeight:1.45,display:"flex",gap:6,alignItems:"flex-start"}}>
+                                <div style={{marginTop:5,padding:"6px 10px",background:"rgba(33,150,243,.04)",border:"1px solid rgba(33,150,243,.14)",borderRadius:7,fontSize:".75rem",color:"rgba(100,181,246,.8)",lineHeight:1.45,display:"flex",gap:6,alignItems:"flex-start"}}>
                                   <span>🗺</span><span>{a.eBirdNote}</span>
                                 </div>
                               )}
-                              {/* When no geo entered, show a subtle hint instead */}
-                              {!a._eBirdPrimary && a.eBirdVerdict === "no_data" && !a._eBirdData && (
-                                <div style={{marginTop:5,padding:"5px 9px",background:"rgba(143,175,138,.04)",border:"1px solid rgba(143,175,138,.1)",borderRadius:7,fontSize:".68rem",color:"rgba(143,175,138,.45)",display:"flex",gap:5,alignItems:"center"}}>
+                              {!a._eBirdPrimary && a.eBirdVerdict==="no_data" && !a._eBirdData && (
+                                <div style={{marginTop:5,padding:"5px 9px",background:"rgba(143,175,138,.04)",border:"1px solid rgba(143,175,138,.1)",borderRadius:7,fontSize:".7rem",color:"rgba(143,175,138,.45)",display:"flex",gap:5,alignItems:"center"}}>
                                   <span>💡</span><span>Add a location to enable eBird regional verification</span>
                                 </div>
                               )}
-                              {/* Candidate species pills */}
+
+                              {/* Candidate pills */}
                               {a._candidates?.length > 1 && (
                                 <div style={{marginTop:7,display:"flex",flexWrap:"wrap",gap:4}}>
                                   {a._candidates.map((c,i) => (
-                                    <span key={i} style={{fontSize:".62rem",padding:"2px 8px",borderRadius:10,
-                                      background: i===0?"rgba(200,168,75,.12)":"rgba(100,150,100,.06)",
-                                      border: i===0?"1px solid rgba(200,168,75,.3)":"1px solid rgba(100,150,100,.15)",
-                                      color: i===0?"#C8A84B":"rgba(186,208,186,.55)"}}>
+                                    <span key={i} style={{fontSize:".65rem",padding:"2px 9px",borderRadius:10,
+                                      background:i===0?"rgba(200,168,75,.12)":"rgba(100,150,100,.06)",
+                                      border:i===0?"1px solid rgba(200,168,75,.3)":"1px solid rgba(100,150,100,.15)",
+                                      color:i===0?"#C8A84B":"rgba(186,208,186,.5)"}}>
                                       {i===0?"✓ ":""}{c.species} {c.confidence}%
                                     </span>
                                   ))}
                                 </div>
                               )}
-                              {/* ── WRONG ID? CORRECTION BUTTON ── */}
+
+                              {/* Correction button */}
                               {correcting?.idx === selIdx ? (
                                 <div style={{marginTop:9,background:"rgba(22,40,22,.8)",border:"1px solid rgba(200,168,75,.28)",borderRadius:8,padding:"10px 12px"}}>
-                                  <div style={{fontSize:".7rem",color:"#C8A84B",fontWeight:600,marginBottom:6}}>What species do you think it is?</div>
-                                  <input
-                                    autoFocus
-                                    className="finp"
-                                    style={{fontSize:".82rem",padding:"7px 10px",marginBottom:8}}
+                                  <div style={{fontSize:".72rem",color:"#C8A84B",fontWeight:600,marginBottom:6}}>What species do you think it is?</div>
+                                  <input autoFocus className="finp" style={{fontSize:".82rem",padding:"7px 10px",marginBottom:8}}
                                     placeholder="e.g. Black-capped Chickadee…"
                                     value={correcting.hint}
                                     onChange={e => setCorrecting(c => ({...c, hint: e.target.value}))}
                                     onKeyDown={e => {
-                                      if (e.key === "Enter" && correcting.hint.trim()) runCorrection(selIdx, correcting.hint.trim());
-                                      if (e.key === "Escape") setCorrecting(null);
+                                      if (e.key==="Enter" && correcting.hint.trim()) runCorrection(selIdx, correcting.hint.trim());
+                                      if (e.key==="Escape") setCorrecting(null);
                                     }}
                                   />
                                   <div style={{display:"flex",gap:6}}>
@@ -1759,33 +1747,17 @@ export default function AvianLens() {
                                   </div>
                                 </div>
                               ) : (
-                                <button
-                                  onClick={() => setCorrecting({ idx: selIdx, hint: "" })}
-                                  style={{marginTop:8,width:"100%",background:"rgba(255,255,255,.03)",border:"1px dashed rgba(143,175,138,.2)",color:"rgba(143,175,138,.55)",borderRadius:7,padding:"6px",cursor:"pointer",fontSize:".7rem",transition:"all .2s"}}
+                                <button onClick={() => setCorrecting({idx:selIdx,hint:""})}
+                                  style={{marginTop:8,width:"100%",background:"rgba(255,255,255,.03)",border:"1px dashed rgba(143,175,138,.2)",color:"rgba(143,175,138,.55)",borderRadius:7,padding:"6px",cursor:"pointer",fontSize:".72rem",transition:"all .2s"}}
                                   onMouseEnter={e => e.currentTarget.style.borderColor="rgba(200,168,75,.35)"}
-                                  onMouseLeave={e => e.currentTarget.style.borderColor="rgba(143,175,138,.2)"}
-                                >
+                                  onMouseLeave={e => e.currentTarget.style.borderColor="rgba(143,175,138,.2)"}>
                                   ✏ Wrong species? Correct it →
                                 </button>
                               )}
+                            </div>{/* end species banner */}
 
-                            </div>{/* end COL 1: species */}
-
-                            {/* COL 2: Photo Score + Analysis */}
-                            <div className="dash-col">
-                              {/* Score block */}
-                              <div className="score-block">
-                                <div className="score-big" style={{color:scoreColor(a.qualityScore)}}>{a.qualityScore}</div>
-                                <div className="score-info">
-                                  <div className="score-grade" style={{color:scoreColor(a.qualityScore)}}>{a.qualityGrade}</div>
-                                  <div className="score-bar-track">
-                                    <div className="score-bar-fill" style={{width:`${a.qualityScore*10}%`,background:scoreColor(a.qualityScore)}}/>
-                                  </div>
-                                  <div className="score-summary">{a.summary}</div>
-                                </div>
-                              </div>
-
-                              {/* Photo analysis */}
+                            {/* 2×2 PHOTO ANALYSIS GRID */}
+                            <div>
                               <div className="st">📷 Photo Analysis</div>
                               <div className="rc-group">
                                 {a.lighting       && <div className="rc"><div className="rc-k">💡 Lighting</div><div className="rc-v">{a.lighting}</div></div>}
@@ -1793,30 +1765,33 @@ export default function AvianLens() {
                                 {a.focusSharpness && <div className="rc"><div className="rc-k">🔍 Focus & Sharpness</div><div className="rc-v">{a.focusSharpness}</div></div>}
                                 {a.behavior       && <div className="rc"><div className="rc-k">🐦 Behavior</div><div className="rc-v">{a.behavior}</div></div>}
                               </div>
+                            </div>
 
-                              {/* Strengths */}
-                              {a.strengths?.length > 0 && <>
-                                <div className="st">✦ Strengths</div>
-                                <div className="tag-row">{a.strengths.map((s,i)=><span key={i} className="tag-g">✓ {s}</span>)}</div>
-                              </>}
-                            </div>{/* end COL 2 */}
+                            {/* TIPS + STRENGTHS side by side */}
+                            <div className="lc-bottom">
+                              <div>
+                                {a.improvements?.length > 0 && <>
+                                  <div className="st">→ Photographer Tips</div>
+                                  <ul className="tips">
+                                    {a.improvements.map((r,i) => <li key={i}><span>→</span>{r}</li>)}
+                                  </ul>
+                                </>}
+                              </div>
+                              <div>
+                                {a.strengths?.length > 0 && <>
+                                  <div className="st">✦ Strengths</div>
+                                  <div className="tag-row">{a.strengths.map((s,i) => <span key={i} className="tag-g">✓ {s}</span>)}</div>
+                                </>}
+                                {a.interestingFact && (
+                                  <div className="fact" style={{marginTop: a.strengths?.length>0 ? 9 : 0}}>
+                                    🔬 <strong style={{color:"#C8A84B"}}>Did you know?</strong> {a.interestingFact}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
 
-                            {/* COL 3: Tips + Fact */}
-                            <div className="dash-col">
-                              {a.improvements?.length > 0 && <>
-                                <div className="st">→ Photographer Tips</div>
-                                <ul className="tips">
-                                  {a.improvements.map((r,i)=><li key={i}><span>→</span>{r}</li>)}
-                                </ul>
-                              </>}
-
-                              {a.interestingFact && (
-                                <div className="fact">🔬 <strong style={{color:"#C8A84B"}}>Did you know?</strong> {a.interestingFact}</div>
-                              )}
-                            </div>{/* end COL 3 */}
-
-                          </div>{/* end dash-top 3-col */}
-                        </>
+                          </div>
+                        </div>
                       );
                     })()}
 
