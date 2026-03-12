@@ -67,9 +67,9 @@ const readDataUrl = (file) => new Promise((res, rej) => {
   r.readAsDataURL(file);
 });
 
-// Resize + compress to stay under Vercel 4.5MB body limit (~1024px, JPEG 0.82)
+// Resize + compress to stay under Vercel body limit and reduce API latency (~800px, JPEG 0.75)
 const compressImage = (file) => new Promise((resolve, reject) => {
-  const MAX_PX = 1024, QUALITY = 0.82;
+  const MAX_PX = 800, QUALITY = 0.75;
   const reader = new FileReader();
   reader.onerror = reject;
   reader.onload = (e) => {
@@ -243,7 +243,7 @@ Return ONLY valid JSON — no text outside:
 
 Rules: confidence scores must sum to 100. Never invent marks not in your observations. Concern must cite a real field-mark mismatch.` }
       ]
-    }], model, apiKey, 1400, location);
+    }], model, apiKey, 1200, location);
     candidatesJson = parseJSON(raw);
     fieldNotes = candidatesJson.fieldNotes || "";
   } catch(e) {

@@ -3,7 +3,7 @@
   "buildCommand": null,
   "outputDirectory": "dist",
   "functions": {
-    "api/analyze.js": { "maxDuration": 30 },
+    "api/analyze.js": { "maxDuration": 60 },
     "api/ebird.js":   { "maxDuration": 10 }
   },
   "rewrites": [
