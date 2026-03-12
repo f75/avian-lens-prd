@@ -291,7 +291,7 @@ Return ONLY valid JSON — no text outside the JSON:
   "strengths": ["strength 1", "strength 2"],
   "improvements": ["tip 1", "tip 2", "tip 3"]
 }`
-    }], model, apiKey, 1400, location);
+    }], model, apiKey, 2000, location);
     candidatesJson = parseJSON(raw);
   } catch(e) {
     return fallback(`Candidate generation failed: ${e.message}`);
@@ -550,26 +550,51 @@ const parseJSON = (raw) => {
   const start = txt.indexOf("{");
   if (start === -1) throw new Error("No JSON object found");
   let s = txt.slice(start);
+
   // Try clean parse first
   try { return JSON.parse(s); } catch(_) {}
-  // Truncation repair: count unclosed brackets and close them
-  let depth = 0, inStr = false, esc = false;
-  for (const ch of s) {
+
+  // Walk the string tracking exact parser state so we can repair cleanly
+  let depth = 0, inStr = false, esc = false, lastSafePos = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
     if (esc) { esc = false; continue; }
     if (ch === "\\" && inStr) { esc = true; continue; }
-    if (ch === '"' && !esc) { inStr = !inStr; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
     if (inStr) continue;
-    if (ch === "{" || ch === "[") depth++;
-    if (ch === "}" || ch === "]") depth--;
+    if (ch === "{" || ch === "[") { depth++; }
+    if (ch === "}" || ch === "]") { depth--; if (depth === 0) lastSafePos = i + 1; }
   }
-  // Strip trailing incomplete token (comma, colon, partial string)
-  let repaired = s.replace(/,\s*$/, "").replace(/:\s*$/, ": null").replace(/"[^"]*$/, '"..."');
-  while (depth > 0) { repaired += depth % 2 === 0 ? "}" : "]"; depth--; }
-  try { return JSON.parse(repaired); } catch(e2) {
-    // Last resort: extract what we can with a regex
-    const m = s.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    throw e2;
+
+  // If we ended cleanly at depth 0, use the balanced substring
+  if (lastSafePos > 0 && depth === 0) {
+    try { return JSON.parse(s.slice(0, lastSafePos)); } catch(_) {}
+  }
+
+  // Truncation repair: strip partial tokens then close open brackets/braces
+  let cut = s;
+  // Remove trailing open string (unclosed quote)
+  if (inStr) cut = cut.replace(/"[^"]*$/, '"..."');
+  // Remove trailing comma, colon, or partial key-value
+  cut = cut.replace(/,\s*$/, "").replace(/:\s*$/, ": null").replace(/,\s*"[^"]*$/, "");
+  // Close unclosed structures (depth is how many {/[ are still open)
+  const stack = [];
+  let d2 = 0, s2 = false, e2 = false;
+  for (const ch of cut) {
+    if (e2) { e2 = false; continue; }
+    if (ch === "\\" && s2) { e2 = true; continue; }
+    if (ch === '"') { s2 = !s2; continue; }
+    if (s2) continue;
+    if (ch === "{") { stack.push("}"); d2++; }
+    if (ch === "[") { stack.push("]"); d2++; }
+    if (ch === "}" || ch === "]") { stack.pop(); d2--; }
+  }
+  while (stack.length) cut += stack.pop();
+  try { return JSON.parse(cut); } catch(e3) {
+    // Absolute last resort: pull out whatever complete top-level JSON we can
+    const m = s.match(/\{[\s\S]*?\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch(_) {} }
+    throw new Error("JSON repair failed: " + e3.message);
   }
 };
 
