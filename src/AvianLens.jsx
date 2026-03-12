@@ -201,9 +201,11 @@ const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = []
     _threePass:true, _eBirdData:null,
   });
 
-  // ── PASS 1+2 MERGED: Vision extracts field notes AND generates candidates in one call ──
-  // Eliminates one full API round-trip vs the old two-pass approach.
-  progress("Pass 1 of 2 — Analysing field marks & generating candidates…");
+  // ── PASS 1 (VISION): Always Haiku — fast image analysis, not bottlenecked by model size ──
+  // Haiku is ~3× faster than Sonnet for vision and handles field-mark extraction excellently.
+  // The tier model (Sonnet for Pro) is reserved for the text-only arbitration pass.
+  const VISION_MODEL = "claude-haiku-4-5-20251001";
+  progress("Pass 1 of 2 — Extracting field marks…");
   let fieldNotes, candidatesJson;
   try {
     const raw = await callClaude([{
@@ -243,7 +245,7 @@ Return ONLY valid JSON — no text outside:
 
 Rules: confidence scores must sum to 100. Never invent marks not in your observations. Concern must cite a real field-mark mismatch.` }
       ]
-    }], model, apiKey, 1200, location);
+    }], VISION_MODEL, apiKey, 1200, location);
     candidatesJson = parseJSON(raw);
     fieldNotes = candidatesJson.fieldNotes || "";
   } catch(e) {
@@ -389,7 +391,7 @@ Match: ${vResult.matchCount} marks | Mismatch: ${vResult.mismatchCount} marks
   }
 
   // ── PASS 3: Final arbitration — Claude must reconcile vision + eBird + verification ──
-  progress(correctionHint ? "Pass 2 of 2 — Arbitrating with verification results…" : "Pass 2 of 2 — eBird-verified final identification…");
+  progress(correctionHint ? `Pass 2 of 2 — Arbitrating with ${model === "claude-sonnet-4-6" ? "Sonnet 4.6 🚀" : "Haiku ⚡"}…` : `Pass 2 of 2 — Final ID with ${model === "claude-sonnet-4-6" ? "Sonnet 4.6 🚀" : "Haiku ⚡"}…`);
   let txt;
   try {
     txt = await callClaude([{
@@ -1149,7 +1151,7 @@ export default function AvianLens() {
               <div className="pc hot" onClick={()=>{setTier("paid");setPage("workspace");}}>
                 <div className="t-name">Ornithologist Pro</div>
                 <div className="t-price">$10 <small>/mo</small></div>
-                <div className="mc-chip pro">🚀 claude-sonnet-4-6</div>
+                <div className="mc-chip pro">⚡ Haiku vision · 🚀 Sonnet ID</div>
                 <ul className="t-feats">
                   <li>{PAID_LIMIT} images per batch</li>
                   <li>Advanced species analysis</li>
@@ -1452,7 +1454,7 @@ export default function AvianLens() {
                       ? "Upload multiple images above to begin"
                       : isAnalyzing
                         ? `Click Stop to halt after the current image finishes`
-                        : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}`}
+                        : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Haiku vision + Sonnet ID 🚀":"Haiku 4.5 ⚡"}`}
                   </div>
                 </div>
 
@@ -1533,7 +1535,7 @@ export default function AvianLens() {
                     {curIdx === selIdx && (
                       <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
                         <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
-                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Haiku + Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
                         <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>{progressMsg || "Pass 1 → eBird → Pass 2…"}</div>
                       </div>
                     )}
@@ -1767,7 +1769,7 @@ export default function AvianLens() {
               <div className="m-desc">{tier==="free"?`Free plan allows ${FREE_LIMIT} images. Upgrade for ${PAID_LIMIT} per batch with Claude Sonnet's deeper analysis and social export.`:"Unlock Avian Lens Pro."}</div>
               <div className="upbox">
                 <div className="upbox-price">$10 <span style={{fontSize:".88rem",fontWeight:400,color:"#8FAF8A"}}>/month</span></div>
-                <div className="upbox-detail">{PAID_LIMIT} images · Sonnet 4.6 · Social Export · Advanced Analysis</div>
+                <div className="upbox-detail">{PAID_LIMIT} images · Haiku vision + Sonnet 4.6 ID · Social Export</div>
               </div>
               <button className="btn btn-gold" style={{marginBottom:8}} onClick={()=>{setTier("paid");setSessionUsed(0);setImages([]);setShowUpgrade(false);}}>Upgrade Now →</button>
               <button className="btn btn-ghost" onClick={()=>setShowUpgrade(false)}>Continue free</button>
