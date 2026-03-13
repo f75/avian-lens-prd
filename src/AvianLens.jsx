@@ -816,6 +816,14 @@ body{background:#060f07;}
 .share-lock{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px;background:rgba(200,168,75,.05);border:1px dashed rgba(200,168,75,.2);border-radius:8px;font-size:.7rem;color:rgba(200,168,75,.55);cursor:pointer;transition:all .2s;}
 .share-lock:hover{background:rgba(200,168,75,.09);color:#C8A84B;}
 
+/* ZIP DOWNLOAD */
+.zip-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 12px;background:rgba(33,150,243,.08);border:1px solid rgba(33,150,243,.28);border-radius:8px;color:#64B5F6;font-family:'DM Sans',sans-serif;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .22s;margin-top:8px;}
+.zip-btn:hover:not(:disabled){background:rgba(33,150,243,.15);border-color:rgba(33,150,243,.5);transform:translateY(-1px);}
+.zip-btn:disabled{opacity:.45;cursor:not-allowed;transform:none;}
+.zip-btn.zipping{border-color:rgba(33,150,243,.45);background:rgba(33,150,243,.12);}
+.zip-bar-wrap{width:100%;height:3px;background:rgba(33,150,243,.12);border-radius:2px;overflow:hidden;margin-top:5px;}
+.zip-bar{height:100%;background:#42A5F5;border-radius:2px;transition:width .3s ease;}
+
 /* LIGHTBOX */
 .lb-bg{position:fixed;inset:0;background:rgba(0,0,0,.93);display:flex;align-items:center;justify-content:center;z-index:500;backdrop-filter:blur(8px);padding:16px;}
 .lb-img{max-width:92vw;max-height:86vh;object-fit:contain;border-radius:9px;box-shadow:0 20px 60px rgba(0,0,0,.6);}
@@ -865,6 +873,8 @@ export default function AvianLens() {
   const [lightbox,    setLightbox]    = useState(null);
 
   const [correcting,  setCorrecting]  = useState(null);   // { idx, hint }
+  const [isZipping,   setIsZipping]   = useState(false);
+  const [zipProgress, setZipProgress] = useState(0);
 
   // ── PRE-UPLOAD FILTERS ───────────────────────────────────────────────────
   const [minQuality,    setMinQuality]    = useState(5);   // minimum quality gate (1–10)
@@ -1020,6 +1030,73 @@ export default function AvianLens() {
     setConnected(p => ({ ...p, [pid]:true }));
     await new Promise(r => setTimeout(r, 1800));
     setShowSocial(false); setSocialStep(null);
+  };
+
+  // ── ZIP DOWNLOAD ──────────────────────────────────────────────────────────
+  const downloadZip = async () => {
+    const batch = displayImages.filter(i => i.analysis && !i._filtered);
+    if (!batch.length || isZipping) return;
+
+    setIsZipping(true);
+    setZipProgress(0);
+
+    try {
+      // Dynamically load JSZip from CDN
+      await new Promise((resolve, reject) => {
+        if (window.JSZip) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+
+      const zip = new window.JSZip();
+      const folder = zip.folder('avian-lens-filtered');
+
+      for (let i = 0; i < batch.length; i++) {
+        const img = batch[i];
+        setZipProgress(Math.round((i / batch.length) * 85));
+
+        // Convert dataURL → binary
+        const [header, b64] = img.dataUrl.split(',');
+        const mimeMatch = header.match(/:(.*?);/);
+        const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+        const ext  = mime.split('/')[1]?.replace('jpeg','jpg') || 'jpg';
+
+        // Build a descriptive filename: species_score_originalname.ext
+        const species = (img.analysis?.species || 'Unknown').replace(/[^a-zA-Z0-9]/g, '_');
+        const score   = img.analysis?.qualityScore ?? 0;
+        const base    = img.name.replace(/\.[^.]+$/, '');
+        const filename = `${species}_Q${score}_${base}.${ext}`;
+
+        folder.file(filename, b64, { base64: true });
+      }
+
+      setZipProgress(90);
+
+      // Generate ZIP blob
+      const blob = await zip.generateAsync(
+        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } },
+        meta => setZipProgress(90 + Math.round(meta.percent * 0.1))
+      );
+
+      setZipProgress(100);
+
+      // Trigger browser download
+      const url  = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href     = url;
+      link.download = `avian-lens-${batch.length}-images.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    } catch (err) {
+      console.error('ZIP error:', err);
+    } finally {
+      setTimeout(() => { setIsZipping(false); setZipProgress(0); }, 1200);
+    }
   };
 
   // ── SLIDER COLORS ────────────────────────────────────────────────────────
@@ -1489,10 +1566,29 @@ export default function AvianLens() {
                       </div>
                     )}
 
-                    <div className="share-note">
+                    {/* ── ZIP DOWNLOAD — available to all tiers ── */}
+                    <button
+                      className={`zip-btn${isZipping?" zipping":""}`}
+                      disabled={passCount === 0 || isZipping}
+                      onClick={downloadZip}
+                    >
+                      {isZipping ? (
+                        <><div className="spin" style={{width:13,height:13,borderTopColor:"#42A5F5",borderColor:"rgba(33,150,243,.22)"}}/>
+                        Zipping {zipProgress < 90 ? `${zipProgress}%` : zipProgress < 100 ? "compressing…" : "saving…"}</>
+                      ) : (
+                        <>📦 Download {passCount > 0 ? passCount : ""} Filtered Image{passCount!==1?"s":""} as ZIP</>
+                      )}
+                    </button>
+                    {isZipping && (
+                      <div className="zip-bar-wrap">
+                        <div className="zip-bar" style={{width:`${zipProgress}%`}}/>
+                      </div>
+                    )}
+
+                    <div className="share-note" style={{marginTop:7}}>
                       {passCount === 0
-                        ? "Analyze images first, then upload passing photos"
-                        : `Uploads all ${passCount} photo${passCount!==1?"s":""} passing your quality & species filters`}
+                        ? "Analyze images first, then export passing photos"
+                        : `${passCount} photo${passCount!==1?"s":""} pass quality ≥${minQuality} · max ${maxPerSpecies===10?"∞":maxPerSpecies}/species`}
                     </div>
                   </div>
                 </div>
