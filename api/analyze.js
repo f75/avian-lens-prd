@@ -68,8 +68,8 @@ export default async function handler(req, res) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: model || "claude-haiku-4-5-20251001", // caller always passes the right model per tier
-        max_tokens: maxTokens || 1200,
+        model: model || "claude-haiku-4-5-20251001",
+        max_tokens: maxTokens || 2200,
         messages: enrichedMessages,
       }),
     });

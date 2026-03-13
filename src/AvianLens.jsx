@@ -190,7 +190,7 @@ const parseCoords = (loc) => {
 // ── eBird cache: keyed by "lat|lng|date" to avoid duplicate calls per batch ──
 const _eBirdCache = {};
 
-const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null, obsDate = "") => {
+const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null, obsDate = "", skipSpecies = false) => {
   const progress = (msg) => onProgress && onProgress(msg);
   const fallback = (msg) => ({
     species:"Unidentifiable", scientificName:"", confidence:"Low",
@@ -200,6 +200,59 @@ const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = []
     identificationReasoning:"", alternativesConsidered:"",
     _threePass:true, _eBirdData:null,
   });
+
+  // ── QUALITY-ONLY MODE (skipSpecies = true) ────────────────────────────────
+  if (skipSpecies) {
+    progress("Analyzing photo quality…");
+    try {
+      const raw = await callClaude([{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mimeType, data: b64 } },
+          { type: "text", text:
+`You are an expert wildlife photography critic. Analyze ONLY the technical and artistic quality of this photograph. Do NOT identify the bird species — that is not required.
+
+Return ONLY valid JSON — no text outside:
+{
+  "qualityScore": <1-10 integer>,
+  "qualityGrade": "Masterpiece/Excellent/Good/Fair/Poor",
+  "summary": "One sentence describing the overall image quality",
+  "lighting": "Lighting quality and direction — golden hour, harsh midday, overcast, backlit etc.",
+  "composition": "Framing, rule of thirds, negative space, background clutter",
+  "focusSharpness": "Subject sharpness, motion blur, depth of field",
+  "behavior": "What the bird is doing — perched, in flight, foraging etc.",
+  "strengths": ["strength 1", "strength 2", "strength 3"],
+  "improvements": ["specific tip 1", "specific tip 2", "specific tip 3"]
+}` }
+        ]
+      }], "claude-haiku-4-5-20251001", apiKey, 800, location);
+      const q = parseJSON(raw);
+      return {
+        species: "Not identified",
+        scientificName: "",
+        confidence: "N/A",
+        identificationReasoning: "Species detection was skipped — quality-only mode.",
+        alternativesConsidered: "",
+        eBirdVerdict: "no_data",
+        eBirdNote: "",
+        interestingFact: "",
+        qualityScore:    q.qualityScore    ?? 5,
+        qualityGrade:    q.qualityGrade    ?? "Fair",
+        summary:         q.summary         ?? "",
+        lighting:        q.lighting        ?? "",
+        composition:     q.composition     ?? "",
+        focusSharpness:  q.focusSharpness  ?? "",
+        behavior:        q.behavior        ?? "",
+        strengths:       q.strengths       ?? [],
+        improvements:    q.improvements    ?? [],
+        _qualityOnly: true,
+        _threePass: false,
+        _eBirdData: null,
+      };
+    } catch(e) {
+      return fallback(`Quality analysis failed: ${e.message}`);
+    }
+  }
 
   // ── PASS 1 (VISION): Always Haiku — fast image analysis, not bottlenecked by model size ──
   // Haiku is ~3× faster than Sonnet for vision and handles field-mark extraction excellently.
@@ -245,7 +298,7 @@ Return ONLY valid JSON — no text outside:
 
 Rules: confidence scores must sum to 100. Never invent marks not in your observations. Concern must cite a real field-mark mismatch.` }
       ]
-    }], VISION_MODEL, apiKey, 1200, location);
+    }], VISION_MODEL, apiKey, 2000, location);
     candidatesJson = parseJSON(raw);
     fieldNotes = candidatesJson.fieldNotes || "";
   } catch(e) {
@@ -486,47 +539,81 @@ const parseJSON = (raw) => {
   if (start === -1) throw new Error("No JSON object found");
   let s = txt.slice(start);
 
-  // Try clean parse first
+  // ── Fast path: clean JSON ──────────────────────────────────────────────────
   try { return JSON.parse(s); } catch(_) {}
 
-  // Walk the string tracking exact parser state so we can repair cleanly
+  // ── Walk the string and record the parse state at every character ──────────
+  // We track: depth, inStr, esc, lastCompletePos (last pos where depth===0)
+  // Also record the position of each open bracket/brace so we know the stack.
   let depth = 0, inStr = false, esc = false, lastSafePos = 0;
+  const openStack = []; // {char, pos} for each unmatched { or [
+
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     if (esc) { esc = false; continue; }
     if (ch === "\\" && inStr) { esc = true; continue; }
     if (ch === '"') { inStr = !inStr; continue; }
     if (inStr) continue;
-    if (ch === "{" || ch === "[") { depth++; }
-    if (ch === "}" || ch === "]") { depth--; if (depth === 0) lastSafePos = i + 1; }
+    if (ch === "{" || ch === "[") { openStack.push({ch, i}); depth++; }
+    if (ch === "}" || ch === "]") {
+      openStack.pop(); depth--;
+      if (depth === 0) lastSafePos = i + 1;
+    }
   }
 
-  // If we ended cleanly at depth 0, use the balanced substring
+  // ── If ended cleanly at depth 0, balanced subset is valid ─────────────────
   if (lastSafePos > 0 && depth === 0) {
     try { return JSON.parse(s.slice(0, lastSafePos)); } catch(_) {}
   }
 
-  // Truncation repair: strip partial tokens then close open brackets/braces
+  // ── Truncation repair ──────────────────────────────────────────────────────
+  // Strategy: find the last COMPLETE key-value pair before truncation,
+  // then close all open structures from innermost to outermost.
+
   let cut = s;
-  // Remove trailing open string (unclosed quote)
-  if (inStr) cut = cut.replace(/"[^"]*$/, '"..."');
-  // Remove trailing comma, colon, or partial key-value
-  cut = cut.replace(/,\s*$/, "").replace(/:\s*$/, ": null").replace(/,\s*"[^"]*$/, "");
-  // Close unclosed structures (depth is how many {/[ are still open)
-  const stack = [];
-  let d2 = 0, s2 = false, e2 = false;
-  for (const ch of cut) {
-    if (e2) { e2 = false; continue; }
-    if (ch === "\\" && s2) { e2 = true; continue; }
-    if (ch === '"') { s2 = !s2; continue; }
-    if (s2) continue;
-    if (ch === "{") { stack.push("}"); d2++; }
-    if (ch === "[") { stack.push("]"); d2++; }
-    if (ch === "}" || ch === "]") { stack.pop(); d2--; }
+
+  if (inStr) {
+    // We're inside an open string. Two cases:
+    // (a) It's a VALUE string — was preceded by `: "`
+    //     → Close it, then close all open structures.
+    // (b) It's a KEY string — was preceded by `, "` or `{ "`
+    //     → Remove the partial key+everything, then close all open structures.
+
+    // Find where the unclosed string starts
+    const lastQuote = cut.lastIndexOf('"', cut.length - 1);
+    // Look backward from lastQuote for non-whitespace
+    const before = cut.slice(0, lastQuote).trimEnd();
+    const prevChar = before[before.length - 1];
+
+    if (prevChar === ":") {
+      // Case (a): mid-value — close the string, keep the key
+      cut = cut.slice(0, lastQuote) + '"(truncated)"';
+    } else {
+      // Case (b): mid-key — remove partial key entry entirely
+      // Strip back to the last comma or opening bracket
+      const stripTo = Math.max(before.lastIndexOf(","), before.lastIndexOf("{"), before.lastIndexOf("["));
+      cut = before.slice(0, stripTo + 1);
+      // Remove trailing comma (would produce invalid JSON before closing brackets)
+      cut = cut.replace(/,\s*$/, "");
+    }
+  } else {
+    // Not in a string — strip trailing partial tokens (comma, colon, partial key)
+    cut = cut
+      .replace(/,\s*"[^"]*$/, "")   // partial key at end: , "key
+      .replace(/,\s*$/, "")          // trailing comma
+      .replace(/:\s*$/, ": null");   // dangling colon → null value
   }
-  while (stack.length) cut += stack.pop();
+
+  // Close all still-open structures in reverse order
+  const closers = { "{": "}", "[": "]" };
+  const closing = openStack.slice().reverse().map(o => closers[o.ch]).join("");
+
+  // Before appending closers, remove a trailing comma that would be invalid
+  cut = cut.replace(/,\s*$/, "");
+  cut += closing;
+
   try { return JSON.parse(cut); } catch(e3) {
-    // Absolute last resort: pull out whatever complete top-level JSON we can
+    // Absolute last resort: extract first complete top-level object
     const m = s.match(/\{[\s\S]*?\}/);
     if (m) { try { return JSON.parse(m[0]); } catch(_) {} }
     throw new Error("JSON repair failed: " + e3.message);
@@ -643,6 +730,19 @@ body{background:#060f07;}
 /* Score bar preview */
 .score-preview{display:flex;gap:3px;height:6px;border-radius:3px;overflow:hidden;margin-top:8px;}
 .score-seg{flex:1;transition:background .3s;}
+
+/* Skip species toggle */
+.skip-species-toggle{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:9px;border:1px solid rgba(100,150,100,.2);background:rgba(22,40,22,.5);cursor:pointer;transition:all .22s;margin-bottom:12px;user-select:none;}
+.skip-species-toggle:hover{border-color:rgba(200,168,75,.35);background:rgba(22,40,22,.8);}
+.skip-species-toggle.on{border-color:rgba(200,168,75,.5);background:rgba(200,168,75,.07);}
+.sst-left{display:flex;align-items:center;gap:9px;}
+.sst-icon{font-size:1.25rem;line-height:1;}
+.sst-label{font-size:.76rem;font-weight:600;color:#BAD0BA;}
+.sst-sub{font-size:.62rem;color:rgba(143,175,138,.5);margin-top:1px;}
+.skip-species-toggle.on .sst-label{color:#EDE8D8;}
+.skip-species-toggle.on .sst-sub{color:rgba(200,168,75,.65);}
+.sst-pill{font-size:.6rem;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:10px;background:rgba(100,150,100,.12);border:1px solid rgba(100,150,100,.2);color:rgba(143,175,138,.5);transition:all .22s;}
+.sst-pill.on{background:rgba(200,168,75,.18);border-color:rgba(200,168,75,.45);color:#C8A84B;}
 
 /* Upload count info */
 .uc-info{display:flex;gap:8px;margin-top:2px;}
@@ -879,6 +979,7 @@ export default function AvianLens() {
   // ── PRE-UPLOAD FILTERS ───────────────────────────────────────────────────
   const [minQuality,    setMinQuality]    = useState(5);   // minimum quality gate (1–10)
   const [maxPerSpecies, setMaxPerSpecies] = useState(5);   // max images per species shown
+  const [skipSpecies,   setSkipSpecies]   = useState(false); // quality-only mode
 
   const fileRef = useRef();
 
@@ -971,11 +1072,11 @@ export default function AvianLens() {
         if (!b64) throw new Error("Could not read image data — please re-upload");
         let analysis;
         try {
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate, skipSpecies);
         } catch(e1) {
           if (cancelRef.current) break;
           await new Promise(r => setTimeout(r, 1500));
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate);
+          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate, skipSpecies);
         }
         if (cancelRef.current) break;
         setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
@@ -1353,6 +1454,24 @@ export default function AvianLens() {
                     </div>
                   </div>
 
+                  {/* Skip Species Detection Toggle */}
+                  <div
+                    className={`skip-species-toggle${skipSpecies?" on":""}`}
+                    onClick={() => setSkipSpecies(s => !s)}
+                    title="Quality-only mode: rates photo quality without identifying the bird species"
+                  >
+                    <div className="sst-left">
+                      <div className="sst-icon">{skipSpecies ? "📷" : "🔬"}</div>
+                      <div className="sst-text">
+                        <div className="sst-label">Skip Species Detection</div>
+                        <div className="sst-sub">{skipSpecies ? "Quality scoring only — faster, no ID" : "Rate photo quality only, skip bird ID"}</div>
+                      </div>
+                    </div>
+                    <div className={`sst-pill${skipSpecies?" on":""}`}>
+                      {skipSpecies ? "ON" : "OFF"}
+                    </div>
+                  </div>
+
                   {/* Stats row */}
                   {analyzedCount > 0 && (
                     <div className="uc-info">
@@ -1679,26 +1798,36 @@ export default function AvianLens() {
                               <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
                                 <div style={{flex:1,minWidth:0}}>
                                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
-                                    <div className="sp-eyebrow">Species Identified</div>
-                                    {a._threePass && (
+                                    <div className="sp-eyebrow">{a._qualityOnly ? "Quality Analysis" : "Species Identified"}</div>
+                                    {a._qualityOnly ? (
+                                      <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(200,168,75,.1)",border:"1px solid rgba(200,168,75,.28)",color:"#C8A84B",letterSpacing:".06em"}}>
+                                        📷 Quality Only
+                                      </span>
+                                    ) : a._threePass && (
                                       <span style={{fontSize:".56rem",fontWeight:700,padding:"2px 7px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.25)",color:"#81C784",letterSpacing:".06em"}}>
                                         {a._eBirdPrimary ? "📍 eBird + Vision" : "🔬 3-PASS + eBird"}
                                       </span>
                                     )}
                                   </div>
-                                  <div className="sp-name">{a.species}</div>
-                                  {a.scientificName && <div className="sp-sci">{a.scientificName}</div>}
+                                  {a._qualityOnly ? (
+                                    <div style={{fontSize:".82rem",color:"rgba(143,175,138,.6)",fontStyle:"italic",marginBottom:8}}>Species detection skipped</div>
+                                  ) : (
+                                    <>
+                                      <div className="sp-name">{a.species}</div>
+                                      {a.scientificName && <div className="sp-sci">{a.scientificName}</div>}
+                                    </>
+                                  )}
                                   <div className="sp-badges">
-                                    <span className="conf-chip">{a.confidence} confidence</span>
+                                    {!a._qualityOnly && <span className="conf-chip">{a.confidence} confidence</span>}
                                     {disp?._filtered ? <span className="gate-fail">⛔ Filtered</span> : <span className="gate-pass">✓ Passes</span>}
-                                    {a._eBirdPrimary && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.18)",border:"1px solid rgba(33,150,243,.5)",color:"#42A5F5"}}>📍 ID via eBird</span>}
-                                    {!a._eBirdPrimary && a.eBirdVerdict==="confirmed" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>🗺 eBird confirmed</span>}
-                                    {a.eBirdVerdict==="unusual" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Unusual for area</span>}
-                                    {a.eBirdVerdict==="overridden" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(156,39,176,.1)",border:"1px solid rgba(156,39,176,.3)",color:"#CE93D8"}}>🔄 eBird revised ID</span>}
-                                    {a._correctionHint && a.userSuggestionVerdict==="accepted" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.3)",color:"#81C784"}}>✓ Correction verified</span>}
-                                    {a._correctionHint && a.userSuggestionVerdict==="rejected" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(244,67,54,.1)",border:"1px solid rgba(244,67,54,.3)",color:"#EF9A9A"}}>✗ Correction rejected</span>}
-                                    {a._correctionHint && a.userSuggestionVerdict==="insufficient_evidence" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Correction uncertain</span>}
-                                    {a._correctionHint && !a.userSuggestionVerdict && <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>✏ Re-analyzed</span>}
+                                    {!a._qualityOnly && a._eBirdPrimary && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.18)",border:"1px solid rgba(33,150,243,.5)",color:"#42A5F5"}}>📍 ID via eBird</span>}
+                                    {!a._qualityOnly && !a._eBirdPrimary && a.eBirdVerdict==="confirmed" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(33,150,243,.1)",border:"1px solid rgba(33,150,243,.28)",color:"#64B5F6"}}>🗺 eBird confirmed</span>}
+                                    {!a._qualityOnly && a.eBirdVerdict==="unusual" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Unusual for area</span>}
+                                    {!a._qualityOnly && a.eBirdVerdict==="overridden" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(156,39,176,.1)",border:"1px solid rgba(156,39,176,.3)",color:"#CE93D8"}}>🔄 eBird revised ID</span>}
+                                    {!a._qualityOnly && a._correctionHint && a.userSuggestionVerdict==="accepted" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(76,175,80,.1)",border:"1px solid rgba(76,175,80,.3)",color:"#81C784"}}>✓ Correction verified</span>}
+                                    {!a._qualityOnly && a._correctionHint && a.userSuggestionVerdict==="rejected" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(244,67,54,.1)",border:"1px solid rgba(244,67,54,.3)",color:"#EF9A9A"}}>✗ Correction rejected</span>}
+                                    {!a._qualityOnly && a._correctionHint && a.userSuggestionVerdict==="insufficient_evidence" && <span style={{fontSize:".6rem",fontWeight:700,padding:"3px 8px",borderRadius:8,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.28)",color:"#FFB74D"}}>⚠ Correction uncertain</span>}
+                                    {!a._qualityOnly && a._correctionHint && !a.userSuggestionVerdict && <span style={{fontSize:".6rem",fontWeight:600,padding:"3px 8px",borderRadius:8,background:"rgba(200,168,75,.08)",border:"1px solid rgba(200,168,75,.22)",color:"#C8A84B"}}>✏ Re-analyzed</span>}
                                   </div>
                                 </div>
                                 {/* Score — tight block top-right of banner */}
@@ -1717,29 +1846,29 @@ export default function AvianLens() {
                               {a.summary && <div className="score-summary" style={{marginBottom:6}}>{a.summary}</div>}
 
                               {/* ID Reasoning */}
-                              {a.identificationReasoning && (
+                              {a.identificationReasoning && !a._qualityOnly && (
                                 <div style={{padding:"7px 10px",background:"rgba(200,168,75,.05)",border:"1px solid rgba(200,168,75,.14)",borderRadius:7,fontSize:".8rem",color:"#C8D8A8",lineHeight:1.5}}>
                                   🔑 <em>{a.identificationReasoning}</em>
                                 </div>
                               )}
-                              {a.alternativesConsidered && (
+                              {a.alternativesConsidered && !a._qualityOnly && (
                                 <div style={{marginTop:5,padding:"6px 10px",background:"rgba(100,150,100,.04)",border:"1px solid rgba(100,150,100,.12)",borderRadius:7,fontSize:".75rem",color:"rgba(186,208,186,.65)",lineHeight:1.45}}>
                                   🔀 <em>{a.alternativesConsidered}</em>
                                 </div>
                               )}
-                              {a.eBirdNote && !a.eBirdNote.toLowerCase().includes("no ebird") && !a.eBirdNote.toLowerCase().includes("not available") && !a.eBirdNote.toLowerCase().includes("rests entirely") && !a.eBirdNote.toLowerCase().includes("field marks alone") && !a.eBirdNote.toLowerCase().includes("no frequency") && (
+                              {a.eBirdNote && !a._qualityOnly && !a.eBirdNote.toLowerCase().includes("no ebird") && !a.eBirdNote.toLowerCase().includes("not available") && !a.eBirdNote.toLowerCase().includes("rests entirely") && !a.eBirdNote.toLowerCase().includes("field marks alone") && !a.eBirdNote.toLowerCase().includes("no frequency") && (
                                 <div style={{marginTop:5,padding:"6px 10px",background:"rgba(33,150,243,.04)",border:"1px solid rgba(33,150,243,.14)",borderRadius:7,fontSize:".75rem",color:"rgba(100,181,246,.8)",lineHeight:1.45,display:"flex",gap:6,alignItems:"flex-start"}}>
                                   <span>🗺</span><span>{a.eBirdNote}</span>
                                 </div>
                               )}
-                              {!a._eBirdPrimary && a.eBirdVerdict==="no_data" && !a._eBirdData && (
+                              {!a._qualityOnly && !a._eBirdPrimary && a.eBirdVerdict==="no_data" && !a._eBirdData && (
                                 <div style={{marginTop:5,padding:"5px 9px",background:"rgba(143,175,138,.04)",border:"1px solid rgba(143,175,138,.1)",borderRadius:7,fontSize:".7rem",color:"rgba(143,175,138,.45)",display:"flex",gap:5,alignItems:"center"}}>
                                   <span>💡</span><span>Add a location to enable eBird regional verification</span>
                                 </div>
                               )}
 
                               {/* Candidate pills */}
-                              {a._candidates?.length > 1 && (
+                              {!a._qualityOnly && a._candidates?.length > 1 && (
                                 <div style={{marginTop:7,display:"flex",flexWrap:"wrap",gap:4}}>
                                   {a._candidates.map((c,i) => (
                                     <span key={i} style={{fontSize:".65rem",padding:"2px 9px",borderRadius:10,
@@ -1777,14 +1906,14 @@ export default function AvianLens() {
                                     </button>
                                   </div>
                                 </div>
-                              ) : (
+                              ) : !a._qualityOnly ? (
                                 <button onClick={() => setCorrecting({idx:selIdx,hint:""})}
                                   style={{marginTop:8,width:"100%",background:"rgba(255,255,255,.03)",border:"1px dashed rgba(143,175,138,.2)",color:"rgba(143,175,138,.55)",borderRadius:7,padding:"6px",cursor:"pointer",fontSize:".72rem",transition:"all .2s"}}
                                   onMouseEnter={e => e.currentTarget.style.borderColor="rgba(200,168,75,.35)"}
                                   onMouseLeave={e => e.currentTarget.style.borderColor="rgba(143,175,138,.2)"}>
                                   ✏ Wrong species? Correct it →
                                 </button>
-                              )}
+                              ) : null}
                             </div>{/* end species banner */}
 
                             {/* 2×2 PHOTO ANALYSIS GRID */}
