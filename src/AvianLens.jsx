@@ -772,6 +772,9 @@ body{background:#060f07;}
 .queue-area{padding:0 16px;flex:1;}
 .queue-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
 .queue-lbl{font-size:.92rem;font-weight:700;color:#8FAF8A;letter-spacing:.1em;text-transform:uppercase;}
+.sel-all-btn{font-size:.65rem;font-weight:700;color:rgba(200,168,75,.7);background:rgba(200,168,75,.07);border:1px solid rgba(200,168,75,.2);border-radius:5px;cursor:pointer;padding:3px 8px;transition:all .15s;line-height:1;}
+.sel-all-btn:hover:not(:disabled){background:rgba(200,168,75,.16);color:#C8A84B;border-color:rgba(200,168,75,.4);}
+.sel-all-btn:disabled{opacity:.28;cursor:default;}
 .clear-btn{font-size:.88rem;color:rgba(200,168,75,.65);background:none;border:none;cursor:pointer;padding:4px 9px;}
 .clear-btn:hover{color:#C8A84B;}
 
@@ -789,12 +792,12 @@ body{background:#060f07;}
 .thumb.done-pass{border-color:rgba(76,175,80,.35);}
 .thumb.done-fail{border-color:rgba(100,150,100,.15);}
 /* Checkbox */
-.tchk{position:absolute;top:5px;right:5px;width:18px;height:18px;border-radius:5px;border:2px solid rgba(255,255,255,.55);background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .18s;z-index:10;backdrop-filter:blur(3px);flex-shrink:0;}
-.tchk:hover{border-color:#C8A84B;background:rgba(0,0,0,.75);}
+.tchk{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:6px;border:2px solid rgba(255,255,255,.65);background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;z-index:20;pointer-events:all;}
+.tchk:hover{border-color:#C8A84B;background:rgba(0,0,0,.85);transform:scale(1.1);}
 .tchk.checked{background:#4CAF50;border-color:#4CAF50;}
-.tchk.checked::after{content:'✓';color:#fff;font-size:.65rem;font-weight:800;line-height:1;}
-.tchk.unchecked{background:rgba(0,0,0,.55);border-color:rgba(255,255,255,.4);}
-.tchk.unchecked:hover{border-color:#E57373;background:rgba(200,60,40,.35);}
+.tchk.checked::after{content:'✓';color:#fff;font-size:.75rem;font-weight:900;line-height:1;}
+.tchk.unchecked{background:rgba(0,0,0,.65);border-color:rgba(255,255,255,.55);}
+.tchk.unchecked:hover{border-color:#EF9A9A;background:rgba(180,40,30,.5);}
 @keyframes ring{0%,100%{box-shadow:0 0 0 0 rgba(76,175,80,.3)}50%{box-shadow:0 0 0 3px rgba(76,175,80,0)}}
 .tov{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;gap:4px;opacity:0;transition:opacity .2s;}
 .thumb:hover .tov{opacity:1;}
@@ -1071,6 +1074,24 @@ export default function AvianLens() {
   // ── ANALYZE ──────────────────────────────────────────────────────────────
   const stopAnalysis = () => { cancelRef.current = true; setIsCancelled(true); };
 
+  // Recompute all auto-checks from a full images array using current filter settings
+  const computeAutoChecks = (imgs) => {
+    const checks = {};
+    const spCount = {};
+    imgs.forEach((img, idx) => {
+      if (!img.analysis) return;
+      const score = img.analysis.qualityScore ?? 0;
+      const sp    = img.analysis.species || "Unknown";
+      if (score < minQuality) { checks[idx] = false; return; }
+      if (!skipSpecies) {
+        spCount[sp] = (spCount[sp] || 0) + 1;
+        if (spCount[sp] > maxPerSpecies) { checks[idx] = false; return; }
+      }
+      checks[idx] = true;
+    });
+    return checks;
+  };
+
   const runAnalysis = async (specificIdx = null) => {
     if (!images.length || isAnalyzing) return;
     cancelRef.current = false;
@@ -1080,6 +1101,7 @@ export default function AvianLens() {
     let used = sessionUsed;
     const snapshot = [...images];
     const indices = specificIdx !== null ? [specificIdx] : snapshot.map((_,i) => i);
+    let localImages = [...snapshot]; // local copy to track latest state for check recompute
     for (const i of indices) {
       if (cancelRef.current) break;
       const img = snapshot[i];
@@ -1087,7 +1109,7 @@ export default function AvianLens() {
       if (!img.dataUrl) continue;
       if (specificIdx === null && img.analysis) continue;
       if (used >= limit) { setShowUpgrade(true); break; }
-      setCurIdx(i); setSelIdx(i);
+      setCurIdx(i); // do NOT call setSelIdx — user controls which image they view
       try {
         const b64 = img.dataUrl.split(",")[1];
         if (!b64) throw new Error("Could not read image data — please re-upload");
@@ -1100,10 +1122,11 @@ export default function AvianLens() {
           analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate, skipSpecies);
         }
         if (cancelRef.current) break;
-        setImages(prev => { const n = [...prev]; n[i] = { ...n[i], analysis, error:null }; return n; });
-        // Auto-set checkbox: passes quality gate & species cap → checked
-        const autoPass = (analysis.qualityScore ?? 0) >= minQuality;
-        setManualChecks(prev => ({ ...prev, [i]: autoPass }));
+        localImages = [...localImages];
+        localImages[i] = { ...localImages[i], analysis, error: null };
+        setImages([...localImages]);
+        // Recompute ALL checks from scratch using updated local array + both filter criteria
+        setManualChecks(computeAutoChecks(localImages));
         used++;
       } catch(e) {
         if (cancelRef.current) break;
@@ -1133,9 +1156,10 @@ export default function AvianLens() {
         analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg, obsDate);
       }
       analysis._correctionHint = hint;
-      setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], analysis, error:null }; return n; });
-      const autoPass = (analysis.qualityScore ?? 0) >= minQuality;
-      setManualChecks(prev => ({ ...prev, [idx]: autoPass }));
+      const updatedImages = [...images];
+      updatedImages[idx] = { ...updatedImages[idx], analysis, error: null };
+      setImages(updatedImages);
+      setManualChecks(computeAutoChecks(updatedImages));
     } catch(e) {
       setImages(prev => { const n = [...prev]; n[idx] = { ...n[idx], error: e?.message || "Re-analysis failed" }; return n; });
     }
@@ -1455,32 +1479,7 @@ export default function AvianLens() {
                     </div>
                   </div>
 
-                  {/* Species Cap Slider */}
-                  <div className="sl-row" style={{marginBottom:12}}>
-                    <div className="sl-head">
-                      <span className="sl-label">🐦 Max Images per Species</span>
-                      <span className="sl-value" style={{background:"rgba(200,168,75,.12)",color:"#C8A84B",border:"1px solid rgba(200,168,75,.3)"}}>
-                        {maxPerSpecies === 10 ? "∞ All" : `×${maxPerSpecies}`}
-                      </span>
-                    </div>
-                    <input
-                      type="range" min={1} max={10} value={maxPerSpecies}
-                      className="rng"
-                      style={{background: speciesBg}}
-                      onChange={e => setMaxPerSpecies(+e.target.value)}
-                    />
-                    <div className="sl-sub">
-                      Show at most <strong style={{color:"#C8A84B"}}>{maxPerSpecies === 10 ? "unlimited" : maxPerSpecies}</strong> photo{maxPerSpecies!==1?"s":""} per identified species
-                    </div>
-                    <div className="qchips">
-                      {[1,2,3,5].map(n=>(
-                        <button key={n} className={`qchip${maxPerSpecies===n?" on":""}`} onClick={()=>setMaxPerSpecies(n)}>×{n}</button>
-                      ))}
-                      <button className={`qchip${maxPerSpecies===10?" on":""}`} onClick={()=>setMaxPerSpecies(10)}>All</button>
-                    </div>
-                  </div>
-
-                  {/* Skip Species Detection Toggle */}
+                  {/* Skip Species Detection Toggle — shown first, logically affects species cap below */}
                   <div
                     className={`skip-species-toggle${skipSpecies?" on":""}`}
                     onClick={() => setSkipSpecies(s => !s)}
@@ -1495,6 +1494,31 @@ export default function AvianLens() {
                     </div>
                     <div className={`sst-pill${skipSpecies?" on":""}`}>
                       {skipSpecies ? "ON" : "OFF"}
+                    </div>
+                  </div>
+
+                  {/* Species Cap Slider — greyed out when skipSpecies is on */}
+                  <div className="sl-row" style={{marginBottom:12, opacity: skipSpecies ? 0.35 : 1, pointerEvents: skipSpecies ? "none" : "auto", transition:"opacity .2s"}}>
+                    <div className="sl-head">
+                      <span className="sl-label">🐦 Max Images per Species</span>
+                      <span className="sl-value" style={{background:"rgba(200,168,75,.12)",color:"#C8A84B",border:"1px solid rgba(200,168,75,.3)"}}>
+                        {maxPerSpecies === 10 ? "∞ All" : `×${maxPerSpecies}`}
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={1} max={10} value={maxPerSpecies}
+                      className="rng"
+                      style={{background: speciesBg}}
+                      onChange={e => setMaxPerSpecies(+e.target.value)}
+                    />
+                    <div className="sl-sub">
+                      {skipSpecies ? "N/A — species detection is off" : <>Show at most <strong style={{color:"#C8A84B"}}>{maxPerSpecies === 10 ? "unlimited" : maxPerSpecies}</strong> photo{maxPerSpecies!==1?"s":""} per identified species</>}
+                    </div>
+                    <div className="qchips">
+                      {[1,2,3,5].map(n=>(
+                        <button key={n} className={`qchip${maxPerSpecies===n?" on":""}`} onClick={()=>setMaxPerSpecies(n)}>×{n}</button>
+                      ))}
+                      <button className={`qchip${maxPerSpecies===10?" on":""}`} onClick={()=>setMaxPerSpecies(10)}>All</button>
                     </div>
                   </div>
 
@@ -1575,24 +1599,24 @@ export default function AvianLens() {
                   <div className="queue-area">
                     <div className="queue-hdr">
                       <span className="queue-lbl">Queue ({images.length})</span>
-                      <div style={{display:"flex",alignItems:"center",gap:4}}>
-                        {analyzedCount > 0 && (
-                          <>
-                            <button className="clear-btn" style={{fontSize:".6rem",padding:"2px 7px"}}
-                              onClick={() => {
-                                const all = {};
-                                images.forEach((img, i) => { if (img.analysis) all[i] = true; });
-                                setManualChecks(prev => ({ ...prev, ...all }));
-                              }}>☑ All</button>
-                            <button className="clear-btn" style={{fontSize:".6rem",padding:"2px 7px"}}
-                              onClick={() => {
-                                const none = {};
-                                images.forEach((img, i) => { if (img.analysis) none[i] = false; });
-                                setManualChecks(prev => ({ ...prev, ...none }));
-                              }}>☐ None</button>
-                          </>
-                        )}
-                        <button className="clear-btn" onClick={clearAll}>Clear all</button>
+                      <div style={{display:"flex",alignItems:"center",gap:3}}>
+                        <button
+                          className="sel-all-btn"
+                          disabled={analyzedCount === 0}
+                          onClick={() => {
+                            const all = {};
+                            images.forEach((img, i) => { if (img.analysis) all[i] = true; });
+                            setManualChecks(prev => ({ ...prev, ...all }));
+                          }}>☑ All</button>
+                        <button
+                          className="sel-all-btn"
+                          disabled={analyzedCount === 0}
+                          onClick={() => {
+                            const none = {};
+                            images.forEach((img, i) => { if (img.analysis) none[i] = false; });
+                            setManualChecks(prev => ({ ...prev, ...none }));
+                          }}>☐ None</button>
+                        <button className="clear-btn" onClick={clearAll}>Clear</button>
                       </div>
                     </div>
 
@@ -1611,22 +1635,10 @@ export default function AvianLens() {
                         return (
                         <div
                           key={idx}
-                          className={`thumb${selIdx===idx?" sel":""}${curIdx===idx?" busy":""}${hasAnalysis&&isChecked?" done-pass":""}${hasAnalysis&&!isChecked&&manualChecks[idx]===false?" done-fail":""}`}
+                          className={`thumb${selIdx===idx?" sel":""}${curIdx===idx?" busy":""}${hasAnalysis&&isChecked?" done-pass":""}${hasAnalysis&&manualChecks[idx]===false?" done-fail":""}`}
                           onClick={() => setSelIdx(idx)}
                         >
                           <img src={img.dataUrl} alt={img.name} onError={e=>e.currentTarget.style.display="none"}/>
-
-                          {/* Checkbox — shown once analyzed */}
-                          {hasAnalysis && curIdx !== idx && (
-                            <div
-                              className={`tchk ${isChecked?"checked":"unchecked"}`}
-                              title={isChecked ? "Included in download/share — click to exclude" : "Excluded — click to include"}
-                              onClick={e => {
-                                e.stopPropagation();
-                                setManualChecks(prev => ({ ...prev, [idx]: !isChecked }));
-                              }}
-                            />
-                          )}
 
                           {/* Analyzing spinner */}
                           {curIdx === idx && (
@@ -1646,7 +1658,7 @@ export default function AvianLens() {
                             </>
                           )}
 
-                          {/* Hover controls */}
+                          {/* Hover controls — remove button only */}
                           {!isAnalyzing && (
                             <div className="tov">
                               <button className="ticobtn" title="Preview"
@@ -1654,6 +1666,19 @@ export default function AvianLens() {
                               <button className="ticobtn del" title="Remove"
                                 onClick={e=>{e.stopPropagation();removeImg(idx);}}>✕</button>
                             </div>
+                          )}
+
+                          {/* Checkbox — MUST be after .tov in DOM to sit on top */}
+                          {hasAnalysis && curIdx !== idx && (
+                            <div
+                              className={`tchk${isChecked?" checked":" unchecked"}`}
+                              title={isChecked ? "Included — click to exclude" : "Excluded — click to include"}
+                              onClick={e => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setManualChecks(prev => ({ ...prev, [idx]: !isChecked }));
+                              }}
+                            />
                           )}
                         </div>
                         );
