@@ -11,11 +11,20 @@
 import Stripe from "stripe";
 import { setUserTier, downgradeUser } from "./firestoreUser.js";
 
-// Vercel by default parses the body — we need the raw buffer for Stripe signature
+// Vercel serverless: disable body parsing so we can read the raw buffer
+// needed for Stripe signature verification
 export const config = { api: { bodyParser: false } };
 
-// Read raw body as a Buffer
+// Read raw body — works whether Vercel parsed it or not
 function getRawBody(req) {
+  // If Vercel already parsed the body, reconstruct it
+  if (req.body) {
+    const raw = typeof req.body === "string"
+      ? req.body
+      : JSON.stringify(req.body);
+    return Promise.resolve(Buffer.from(raw));
+  }
+  // Otherwise stream it
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on("data", c => chunks.push(typeof c === "string" ? Buffer.from(c) : c));
