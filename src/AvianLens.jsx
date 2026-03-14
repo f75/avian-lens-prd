@@ -970,8 +970,8 @@ export default function AvianLens() {
   const [authLoading, setAuthLoading] = useState(true);   // true while Firebase resolves session
   const [authError,   setAuthError]   = useState(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  // Capture ?checkout=success before Firebase wipes the URL
-  const checkoutStatusRef = useRef(() => new URLSearchParams(window.location.search).get('checkout'))();
+  // Capture ?checkout=success immediately (before Firebase resolves and before URL is cleaned)
+  const checkoutStatusRef = useRef(new URLSearchParams(window.location.search).get('checkout'));
 
   const [page,        setPage]        = useState("landing");
   const [sessionUsed, setSessionUsed] = useState(0);
@@ -1062,7 +1062,7 @@ export default function AvianLens() {
   }, []);
 
   useEffect(() => {
-    if (checkoutStatusRef !== 'success' || !idToken) return;
+    if (checkoutStatusRef.current !== 'success' || !idToken) return;
     // Stripe webhook may need a moment to fire — poll up to 8× with 2s gaps
     let attempts = 0;
     const poll = async () => {
