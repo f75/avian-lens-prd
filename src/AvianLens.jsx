@@ -202,7 +202,7 @@ const analyzeImage = async (b64, mimeType, location, model, idToken, _unused = [
 
 Return ONLY valid JSON — no text outside:
 {
-  "qualityScore": <1-10 integer>,
+  "qualityScore": 7,
   "qualityGrade": "Masterpiece/Excellent/Good/Fair/Poor",
   "summary": "One sentence describing the overall image quality",
   "lighting": "Lighting quality and direction — golden hour, harsh midday, overcast, backlit etc.",
@@ -213,7 +213,7 @@ Return ONLY valid JSON — no text outside:
   "improvements": ["specific tip 1", "specific tip 2", "specific tip 3"]
 }` }
         ]
-      }], "claude-haiku-4-5-20251001", idToken, 800, location);
+      }], "claude-haiku-4-5-20251001", idToken, 1200, location);
       const q = parseJSON(raw);
       return {
         species: "Not identified",
@@ -678,7 +678,8 @@ body{background:#060f07;}
 .user-avatar{width:30px;height:30px;border-radius:50%;border:2px solid rgba(200,168,75,.35);object-fit:cover;display:block;}
 .user-avatar-initials{background:rgba(200,168,75,.2);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#C8A84B;}
 .user-dropdown{display:none;position:absolute;top:36px;right:0;min-width:200px;background:#0e1e0f;border:1px solid rgba(100,150,100,.2);border-radius:10px;padding:12px;z-index:300;box-shadow:0 12px 36px rgba(0,0,0,.5);}
-.user-menu:hover .user-dropdown{display:block;}
+.user-menu .user-dropdown{display:none;}
+.user-menu.open .user-dropdown{display:block;}
 .user-name{font-size:.82rem;font-weight:600;color:#EDE8D8;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .user-email{font-size:.72rem;color:rgba(143,175,138,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;}
 .signout-btn{width:100%;padding:7px;background:rgba(200,80,40,.08);border:1px solid rgba(200,80,40,.22);border-radius:6px;color:#E8956A;font-size:.76rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .18s;}
@@ -840,6 +841,9 @@ body{background:#060f07;}
 .lc-imgcol{display:flex;flex-direction:column;gap:7px;position:sticky;top:0;}
 .prev-img{width:100%;height:auto;object-fit:cover;border-radius:11px;background:rgba(10,20,10,.8);display:block;cursor:zoom-in;}
 .lc-meta{display:flex;flex-direction:column;gap:4px;}
+.img-score-strip{display:flex;align-items:center;gap:10px;background:rgba(8,18,8,.7);border:1px solid rgba(100,150,100,.18);border-radius:8px;padding:8px 11px;margin-top:2px;}
+.img-score-num{font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:700;line-height:1;flex-shrink:0;}
+.img-score-grade{font-size:.72rem;font-weight:600;}
 .imb{display:flex;align-items:center;gap:6px;background:rgba(14,24,14,.8);border:1px solid rgba(100,150,100,.14);border-radius:6px;padding:5px 9px;}
 .imb-k{font-size:.62rem;color:rgba(143,175,138,.5);text-transform:uppercase;letter-spacing:.07em;white-space:nowrap;flex-shrink:0;}
 .imb-v{font-size:.78rem;color:#EDE8D8;font-weight:500;word-break:break-all;}
@@ -965,6 +969,7 @@ export default function AvianLens() {
   const [profile,     setProfile]     = useState(null);   // { tier, analysisCount, analysisLimit, ... }
   const [authLoading, setAuthLoading] = useState(true);   // true while Firebase resolves session
   const [authError,   setAuthError]   = useState(null);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   const [page,        setPage]        = useState("landing");
   const [sessionUsed, setSessionUsed] = useState(0);
@@ -1092,6 +1097,7 @@ export default function AvianLens() {
   const serverUsed     = profile?.analysisCount ?? 0;
   const limitRemaining = Math.max(0, limit - serverUsed - sessionUsed);
   const usagePct       = Math.min(100, (serverUsed + sessionUsed) / limit * 100);
+  // Note: limitRemaining is based on server-tracked usage only, not queue length
 
 
   // ── APPLY POST-ANALYSIS FILTERS ──────────────────────────────────────────
@@ -1121,7 +1127,7 @@ export default function AvianLens() {
     // Only accept image/* files; enforce batch (multiple) only
     const valid = Array.from(files).filter(f => f.type.startsWith("image/"));
     if (!valid.length) return;
-    const avail = Math.max(0, limit - sessionUsed - images.length);
+    const avail = Math.max(0, limit - serverUsed - sessionUsed);
     if (avail <= 0) { setShowUpgrade(true); return; }
     const toAdd = valid.slice(0, avail);
 
@@ -1378,7 +1384,7 @@ export default function AvianLens() {
               <h1 className="app-title">Avian <em>Lens</em></h1>
               <p className="tagline">AI-Powered Bird Photography Analysis & Species Identification</p>
               <div className="pills">
-                {["🔬 Species ID","📊 Quality Scoring","📷 EXIF Data","📍 Geo Context","🎚 Smart Filters","🌐 Social Export"].map(f=>(
+                {["🔬 Species ID","📊 Quality Scoring","📷 EXIF Data","📍 Geo Context","🎚 Smart Filters","🌐 Social Export — coming soon"].map(f=>(
                   <span key={f} className="pill">{f}</span>
                 ))}
               </div>
@@ -1439,16 +1445,21 @@ export default function AvianLens() {
                 )}
                 {/* User avatar + sign out */}
                 {authUser && (
-                  <div className="user-menu">
+                  <div className={`user-menu${showUserMenu?" open":""}`}
+                    onClick={() => setShowUserMenu(v => !v)}
+                    onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setShowUserMenu(false); }}
+                    tabIndex={0}
+                    style={{outline:"none"}}
+                  >
                     {authUser.photoURL
                       ? <img src={authUser.photoURL} className="user-avatar" alt="avatar" referrerPolicy="no-referrer"/>
                       : <div className="user-avatar user-avatar-initials">{(authUser.displayName||"?")[0]}</div>
                     }
-                    <div className="user-dropdown">
+                    <div className="user-dropdown" onClick={e => e.stopPropagation()}>
                       <div className="user-name">{authUser.displayName || authUser.email}</div>
                       <div className="user-email">{authUser.email}</div>
                       <hr style={{border:"none",borderTop:"1px solid rgba(100,150,100,.15)",margin:"6px 0"}}/>
-                      <button className="signout-btn" onClick={handleSignOut}>Sign out</button>
+                      <button className="signout-btn" onClick={() => { setShowUserMenu(false); handleSignOut(); }}>Sign out</button>
                     </div>
                   </div>
                 )}
@@ -1462,6 +1473,24 @@ export default function AvianLens() {
                 {/* ═══ UPLOAD CONFIGURATION PANEL ═══ */}
                 <div className="upload-config">
                   <div className="uc-title">Upload Filters</div>
+
+                  {/* Skip Species Detection Toggle — top of panel, controls what follows */}
+                  <div
+                    className={`skip-species-toggle${skipSpecies?" on":""}`}
+                    onClick={() => setSkipSpecies(s => !s)}
+                    title="Quality-only mode: rates photo quality without identifying the bird species"
+                  >
+                    <div className="sst-left">
+                      <div className="sst-icon">{skipSpecies ? "📷" : "🔬"}</div>
+                      <div className="sst-text">
+                        <div className="sst-label">Skip Species Detection</div>
+                        <div className="sst-sub">{skipSpecies ? "Quality scoring only — faster, no ID" : "Also identify species in each photo"}</div>
+                      </div>
+                    </div>
+                    <div className={`sst-pill${skipSpecies?" on":""}`}>
+                      {skipSpecies ? "ON" : "OFF"}
+                    </div>
+                  </div>
 
                   {/* Quality Gate Slider */}
                   <div className="sl-row">
@@ -1498,24 +1527,6 @@ export default function AvianLens() {
                           {n}+ · {gradeLabel(n)}
                         </button>
                       ))}
-                    </div>
-                  </div>
-
-                  {/* Skip Species Detection Toggle — shown first, logically affects species cap below */}
-                  <div
-                    className={`skip-species-toggle${skipSpecies?" on":""}`}
-                    onClick={() => setSkipSpecies(s => !s)}
-                    title="Quality-only mode: rates photo quality without identifying the bird species"
-                  >
-                    <div className="sst-left">
-                      <div className="sst-icon">{skipSpecies ? "📷" : "🔬"}</div>
-                      <div className="sst-text">
-                        <div className="sst-label">Skip Species Detection</div>
-                        <div className="sst-sub">{skipSpecies ? "Quality scoring only — faster, no ID" : "Rate photo quality only, skip bird ID"}</div>
-                      </div>
-                    </div>
-                    <div className={`sst-pill${skipSpecies?" on":""}`}>
-                      {skipSpecies ? "ON" : "OFF"}
                     </div>
                   </div>
 
@@ -1764,26 +1775,16 @@ export default function AvianLens() {
                       )}
                     </div>
 
-                    {passCount === 0 ? (
-                      <div className={`share-btns share-disabled`}>
-                        {SOCIAL.map(p=>(
-                          <div key={p.id} className="soc-tile">
-                            <span className="soc-tile-ico">{p.icon}</span>
-                            <span className="soc-tile-lbl">{p.name.split(" ")[0]}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="share-btns">
-                        {SOCIAL.map(p=>(
-                          <button key={p.id} className={`soc-tile${connected[p.id]?" lkd":""}`}
-                            onClick={()=>handleSocialUpload(p.id)}>
-                            <span className="soc-tile-ico">{p.icon}</span>
-                            <span className="soc-tile-lbl">{p.name.split(" ")[0]}{connected[p.id]?" ✓":""}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    {/* Social export — coming soon */}
+                    <div className="share-btns share-disabled">
+                      {SOCIAL.map(p=>(
+                        <div key={p.id} className="soc-tile" style={{position:"relative"}}>
+                          <span className="soc-tile-ico" style={{opacity:.45}}>{p.icon}</span>
+                          <span className="soc-tile-lbl" style={{opacity:.45}}>{p.name.split(" ")[0]}</span>
+                          <span style={{position:"absolute",top:4,right:4,fontSize:".48rem",fontWeight:700,background:"rgba(200,168,75,.18)",color:"#C8A84B",borderRadius:4,padding:"1px 4px",letterSpacing:".05em"}}>SOON</span>
+                        </div>
+                      ))}
+                    </div>
 
                     {/* ── ZIP DOWNLOAD — available to all tiers ── */}
                     <button
@@ -1805,9 +1806,7 @@ export default function AvianLens() {
                     )}
 
                     <div className="share-note" style={{marginTop:7}}>
-                      {passCount === 0
-                        ? "Analyze images first, then export passing photos"
-                        : `${passCount} photo${passCount!==1?"s":""} pass quality ≥${minQuality} · max ${maxPerSpecies===10?"∞":maxPerSpecies}/species`}
+                      Social export coming soon — use ZIP download below
                     </div>
                   </div>
                 </div>
@@ -1874,6 +1873,19 @@ export default function AvianLens() {
                           <div className="lc-imgcol">
                             <img src={selImg.dataUrl} alt={selImg.name} className="prev-img"
                               onClick={()=>setLightbox({src:selImg.dataUrl,name:selImg.name,species:a.species})}/>
+                            {/* Score strip — directly under image */}
+                            <div className="img-score-strip">
+                              <div className="img-score-num" style={{color:scoreColor(a.qualityScore)}}>{a.qualityScore}<span style={{fontSize:".7rem",opacity:.5}}>/10</span></div>
+                              <div style={{flex:1}}>
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
+                                  <span className="img-score-grade" style={{color:scoreColor(a.qualityScore)}}>{a.qualityGrade}</span>
+                                  {a._qualityOnly && <span style={{fontSize:".58rem",color:"rgba(200,168,75,.6)",fontWeight:600}}>📷 Quality Only</span>}
+                                </div>
+                                <div style={{width:"100%",height:4,background:"rgba(22,40,22,.8)",borderRadius:2,overflow:"hidden"}}>
+                                  <div style={{height:"100%",borderRadius:2,background:scoreColor(a.qualityScore),width:`${a.qualityScore*10}%`,transition:"width .6s cubic-bezier(.4,0,.2,1)"}}/>
+                                </div>
+                              </div>
+                            </div>
                             <div className="lc-meta">
                               {(selImg.exif?.make||selImg.exif?.model) && (
                                 <div className="imb"><span className="imb-k">📷</span><span className="imb-v">{selImg.exif.make||""} {selImg.exif.model||""}</span></div>
