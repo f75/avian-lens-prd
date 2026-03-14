@@ -1,16 +1,51 @@
+import { verifyIdToken } from "./firebaseAdmin.js";
+import { getOrCreateUser, checkAndIncrementUsage } from "./firestoreUser.js";
+import { getTierConfig } from "../src/tierConfig.js";
+
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     return res.status(200).end();
   }
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   try {
+    // ── Auth: verify Firebase ID token ────────────────────────────────────
+    let decodedToken;
+    try {
+      decodedToken = await verifyIdToken(req.headers.authorization);
+    } catch (e) {
+      return res.status(401).json({ error: "Unauthorised — please sign in again" });
+    }
+
+    const uid = decodedToken.uid;
+
+    // ── Ensure user document exists (first-time sign-in) ──────────────────
+    const user = await getOrCreateUser(uid, {
+      email:       decodedToken.email,
+      displayName: decodedToken.name,
+      photoURL:    decodedToken.picture,
+    });
+
+    // ── Usage enforcement: check limit for this tier ───────────────────────
+    const tierCfg = getTierConfig(user.tier);
+    const usage   = await checkAndIncrementUsage(uid, tierCfg.analysisLimit);
+
+    if (!usage.allowed) {
+      return res.status(402).json({
+        error:       `Monthly limit reached (${usage.limit} analyses). Upgrade to continue.`,
+        limitReached: true,
+        count:        usage.count,
+        limit:        usage.limit,
+        tier:         usage.tier,
+      });
+    }
+
     const { messages, model, maxTokens, location } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Missing messages array" });

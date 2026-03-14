@@ -1,14 +1,19 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { initializeApp }          from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { TIER_CONFIG, getTierConfig } from "./tierConfig.js";
 
-// ── API KEY (set here for direct browser / GitHub Pages use) ─────────────────
-// On Vercel this is ignored — the key lives in the ANTHROPIC_API_KEY env var.
-// WARNING: do not commit a real key to a public repo. Use Vercel env vars instead.
-const BAKED_API_KEY = ""; // key lives in Vercel ANTHROPIC_API_KEY env var
-
-const FREE_LIMIT = 3;
-const PAID_LIMIT = 20;
-const FREE_MODEL  = "claude-haiku-4-5-20251001";
-const PAID_MODEL  = "claude-sonnet-4-6"; // Sonnet 4.6 for Pro — best available model
+// ── Firebase client config ────────────────────────────────────────────────────
+const firebaseApp = initializeApp({
+  apiKey:            "AIzaSyDpMxUJUBkKTYeG1l0Ek0zkuup9_uPFSOo",
+  authDomain:        "avianlens-412d9.firebaseapp.com",
+  projectId:         "avianlens-412d9",
+  storageBucket:     "avianlens-412d9.firebasestorage.app",
+  messagingSenderId: "705476958514",
+  appId:             "1:705476958514:web:e45ca72f34705bc2899f2b",
+});
+const auth     = getAuth(firebaseApp);
+const provider = new GoogleAuthProvider();
 
 const SOCIAL = [
   { id:"google",    name:"Google Photos", icon:"🔵" },
@@ -95,49 +100,32 @@ const compressImage = (file) => new Promise((resolve, reject) => {
 
 // ── AI ────────────────────────────────────────────────────────────────────────
 // ── CLAUDE API CALL (shared) ─────────────────────────────────────────────────
-const callClaude = async (messages, model, apiKey, maxTokens = 1000, location = "") => {
-  let resp, data;
+// ── Call Vercel proxy with Firebase ID token in Authorization header ──────────
+const callClaude = async (messages, model, idToken, maxTokens = 1000, location = "") => {
+  if (!idToken) throw new Error("Not signed in — please sign in to analyse images");
 
-  // 1. Try Vercel serverless proxy (hides API key, works in production)
-  //    404 = no proxy present (GitHub Pages) → fall through to direct call
-  try {
-    resp = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, model, maxTokens, location }),
-    });
-
-    if (resp.ok) {
-      data = await resp.json();
-      return data.content?.find(c => c.type === "text")?.text || "";
-    }
-
-    if (resp.status !== 404) {
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData.error || `Server error ${resp.status}`);
-    }
-    // 404 — no serverless proxy, fall through to direct call
-  } catch(e) {
-    if (!e.message.includes("fetch") && !e.message.includes("NetworkError") && !e.message.includes("Failed to fetch")) {
-      throw e;
-    }
-  }
-
-  // 2. Direct Anthropic API call (GitHub Pages / local dev — needs user-supplied key)
-  if (!apiKey) throw new Error("No API key — enter your Anthropic key (sk-ant-...) in the bar above");
-  resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await fetch("/api/analyze", {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
+      "Content-Type":  "application/json",
+      "Authorization": `Bearer ${idToken}`,
     },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages }),
+    body: JSON.stringify({ messages, model, maxTokens, location }),
   });
-  data = await resp.json();
-  if (!resp.ok) throw new Error(data.error?.message || `Anthropic API error ${resp.status}`);
-  return data.content?.find(c => c.type === "text")?.text || "";
+
+  if (resp.ok) {
+    const data = await resp.json();
+    return data.content?.find(c => c.type === "text")?.text || "";
+  }
+
+  const errData = await resp.json().catch(() => ({}));
+  // 402 = usage limit reached — surface clearly to the UI
+  if (resp.status === 402) {
+    const err = new Error(errData.error || "Monthly analysis limit reached");
+    err.limitReached = true;
+    throw err;
+  }
+  throw new Error(errData.error || `Server error ${resp.status}`);
 };
 
 // ── TWO-PASS ANALYSIS ─────────────────────────────────────────────────────────
@@ -190,7 +178,7 @@ const parseCoords = (loc) => {
 // ── eBird cache: keyed by "lat|lng|date" to avoid duplicate calls per batch ──
 const _eBirdCache = {};
 
-const analyzeImage = async (b64, mimeType, location, model, apiKey, _unused = [], correctionHint = "", onProgress = null, obsDate = "", skipSpecies = false) => {
+const analyzeImage = async (b64, mimeType, location, model, idToken, _unused = [], correctionHint = "", onProgress = null, obsDate = "", skipSpecies = false) => {
   const progress = (msg) => onProgress && onProgress(msg);
   const fallback = (msg) => ({
     species:"Unidentifiable", scientificName:"", confidence:"Low",
@@ -225,7 +213,7 @@ Return ONLY valid JSON — no text outside:
   "improvements": ["specific tip 1", "specific tip 2", "specific tip 3"]
 }` }
         ]
-      }], "claude-haiku-4-5-20251001", apiKey, 800, location);
+      }], "claude-haiku-4-5-20251001", idToken, 800, location);
       const q = parseJSON(raw);
       return {
         species: "Not identified",
@@ -298,7 +286,7 @@ Return ONLY valid JSON — no text outside:
 
 Rules: confidence scores must sum to 100. Never invent marks not in your observations. Concern must cite a real field-mark mismatch.` }
       ]
-    }], VISION_MODEL, apiKey, 2000, location);
+    }], VISION_MODEL, idToken, 2000, location);
     candidatesJson = parseJSON(raw);
     fieldNotes = candidatesJson.fieldNotes || "";
   } catch(e) {
@@ -427,7 +415,7 @@ Return ONLY valid JSON:
   "overallVerdict": "CONFIRMED|PLAUSIBLE|UNLIKELY|REFUTED",
   "verificationNote": "One honest sentence — if marks mostly match say so; if they don't, say the suggestion is likely wrong"
 }`
-      }], model, apiKey, 900, location);
+      }], model, idToken, 900, location);
       const vResult = parseJSON(verifyRaw);
       const checks = vResult.diagnosticChecks?.map(c =>
         `  • ${c.mark}: expected "${c.expected}" → observed "${c.observed}" [${c.verdict}]`
@@ -480,7 +468,7 @@ Return ONLY valid JSON — no text outside:
   "eBirdVerdict": "confirmed|unusual|overridden|no_data",
   "eBirdNote": "One sentence on eBird data — ONLY if eBird data was provided. Empty string if not."
 }`
-    }], model, apiKey, 900, location);
+    }], model, idToken, 900, location);
   } catch(e) {
     // Pass 3 failed — fall back to Pass 2 top candidate
     const top = candidates[0] || {};
@@ -678,14 +666,23 @@ body{background:#060f07;}
 .who-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:12px;}
 .who-tag{font-size:.72rem;padding:3px 9px;border-radius:8px;background:rgba(200,168,75,.07);border:1px solid rgba(200,168,75,.15);color:rgba(200,168,75,.75);}
 
-/* ── API KEY BANNER ── */
-.apibar{background:rgba(200,168,75,.07);border-bottom:1px solid rgba(200,168,75,.18);padding:7px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.apibar-lbl{font-size:.82rem;color:#C8A84B;font-weight:600;white-space:nowrap;}
-.apibar-inp{flex:1;min-width:220px;background:rgba(10,20,10,.6);border:1px solid rgba(200,168,75,.25);border-radius:6px;padding:6px 11px;color:#EDE8D8;font-family:'DM Sans',sans-serif;font-size:.85rem;outline:none;}
-.apibar-inp:focus{border-color:rgba(200,168,75,.5);}
-.apibar-inp::placeholder{color:rgba(200,168,75,.3);}
-.apibar-ok{font-size:.78rem;color:#4CAF50;font-weight:600;white-space:nowrap;}
-.apibar-link{font-size:.75rem;color:rgba(200,168,75,.5);white-space:nowrap;}
+/* ── AUTH / SIGN-IN ── */
+.auth-splash{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;}
+.signin-box{margin:28px auto 0;max-width:320px;text-align:center;}
+.google-signin-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;padding:12px 24px;border-radius:9px;border:1px solid rgba(200,168,75,.3);background:rgba(255,255,255,.05);color:#EDE8D8;font-family:'DM Sans',sans-serif;font-size:.92rem;font-weight:600;cursor:pointer;transition:all .22s;width:100%;}
+.google-signin-btn:hover{background:rgba(255,255,255,.09);border-color:rgba(200,168,75,.55);transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,.3);}
+.signin-note{font-size:.72rem;color:rgba(143,175,138,.45);margin-top:10px;}
+.auth-err{margin-top:8px;padding:7px 12px;background:rgba(244,67,54,.08);border:1px solid rgba(244,67,54,.25);border-radius:6px;font-size:.78rem;color:#EF9A9A;}
+/* User menu in header */
+.user-menu{position:relative;cursor:pointer;}
+.user-avatar{width:30px;height:30px;border-radius:50%;border:2px solid rgba(200,168,75,.35);object-fit:cover;display:block;}
+.user-avatar-initials{background:rgba(200,168,75,.2);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#C8A84B;}
+.user-dropdown{display:none;position:absolute;top:36px;right:0;min-width:200px;background:#0e1e0f;border:1px solid rgba(100,150,100,.2);border-radius:10px;padding:12px;z-index:300;box-shadow:0 12px 36px rgba(0,0,0,.5);}
+.user-menu:hover .user-dropdown{display:block;}
+.user-name{font-size:.82rem;font-weight:600;color:#EDE8D8;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.user-email{font-size:.72rem;color:rgba(143,175,138,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;}
+.signout-btn{width:100%;padding:7px;background:rgba(200,80,40,.08);border:1px solid rgba(200,80,40,.22);border-radius:6px;color:#E8956A;font-size:.76rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .18s;}
+.signout-btn:hover{background:rgba(200,80,40,.16);}
 /* ── HEADER ── */
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border-bottom:1px solid rgba(100,150,100,.12);background:rgba(6,15,7,.9);backdrop-filter:blur(16px);position:sticky;top:0;z-index:200;}
 .brand{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;}
@@ -962,13 +959,18 @@ body{background:#060f07;}
 // APP
 // ─────────────────────────────────────────────────────────────────────────────
 export default function AvianLens() {
+  // ── Auth & profile state ──────────────────────────────────────────────────
+  const [authUser,    setAuthUser]    = useState(null);   // Firebase user object
+  const [idToken,     setIdToken]     = useState(null);   // current ID token string
+  const [profile,     setProfile]     = useState(null);   // { tier, analysisCount, analysisLimit, ... }
+  const [authLoading, setAuthLoading] = useState(true);   // true while Firebase resolves session
+  const [authError,   setAuthError]   = useState(null);
+
   const [page,        setPage]        = useState("landing");
-  const [apiKey,      setApiKey]      = useState(() => sessionStorage.getItem("avian_api_key") || BAKED_API_KEY);
-  const [tier,        setTier]        = useState(null);
   const [sessionUsed, setSessionUsed] = useState(0);
-  const [images,      setImages]      = useState([]);   // all uploaded
+  const [images,      setImages]      = useState([]);
   const [location,    setLocation]    = useState("");
-  const [obsDate,      setObsDate]      = useState("");  // date of observation
+  const [obsDate,     setObsDate]     = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCancelled, setIsCancelled] = useState(false);
   const cancelRef = useRef(false);
@@ -982,22 +984,115 @@ export default function AvianLens() {
   const [dragOver,    setDragOver]    = useState(false);
   const [lightbox,    setLightbox]    = useState(null);
 
-  const [correcting,  setCorrecting]  = useState(null);   // { idx, hint }
+  const [correcting,  setCorrecting]  = useState(null);
   const [isZipping,   setIsZipping]   = useState(false);
   const [zipProgress, setZipProgress] = useState(0);
 
-  // ── PRE-UPLOAD FILTERS ───────────────────────────────────────────────────
-  const [minQuality,    setMinQuality]    = useState(5);   // minimum quality gate (1–10)
-  const [maxPerSpecies, setMaxPerSpecies] = useState(5);   // max images per species shown
-  const [skipSpecies,   setSkipSpecies]   = useState(false); // quality-only mode
-  const [manualChecks,  setManualChecks]  = useState({});    // idx → true/false (user overrides auto-filter)
+  // ── Filters ───────────────────────────────────────────────────────────────
+  const [minQuality,    setMinQuality]    = useState(5);
+  const [maxPerSpecies, setMaxPerSpecies] = useState(5);
+  const [skipSpecies,   setSkipSpecies]   = useState(false);
+  const [manualChecks,  setManualChecks]  = useState({});
 
   const fileRef = useRef();
 
-  const limit          = tier === "paid" ? PAID_LIMIT : FREE_LIMIT;
-  const model          = tier === "paid" ? PAID_MODEL  : FREE_MODEL;
-  const limitRemaining = Math.max(0, limit - sessionUsed - images.length);
-  const usagePct       = Math.min(100, (sessionUsed + images.length) / limit * 100);
+  // ── Firebase auth listener ────────────────────────────────────────────────
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setAuthUser(user);
+        try {
+          const token = await user.getIdToken();
+          setIdToken(token);
+          await loadProfile(token);
+          setPage("workspace");
+        } catch(e) {
+          setAuthError("Could not load profile. Please try again.");
+        }
+      } else {
+        setAuthUser(null);
+        setIdToken(null);
+        setProfile(null);
+        setPage("landing");
+      }
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Refresh ID token every 50 minutes (tokens expire after 60 min)
+  useEffect(() => {
+    if (!authUser) return;
+    const iv = setInterval(async () => {
+      try {
+        const token = await authUser.getIdToken(true);
+        setIdToken(token);
+      } catch(_) {}
+    }, 50 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [authUser]);
+
+  // ── Load profile from Firestore via API ───────────────────────────────────
+  const loadProfile = async (token) => {
+    const resp = await fetch("/api/user-profile", {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("Profile load failed");
+    const data = await resp.json();
+    setProfile(data);
+    return data;
+  };
+
+  // ── Handle ?checkout=success redirect from Stripe ─────────────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("checkout");
+    if (!status) return;
+    // Clean URL without reload
+    window.history.replaceState({}, "", window.location.pathname);
+    if (status === "success" && idToken) {
+      // Stripe webhook may need a moment — poll profile up to 5× with 2s gaps
+      let attempts = 0;
+      const poll = async () => {
+        attempts++;
+        try {
+          const data = await loadProfile(idToken);
+          if (data.tier === "starter" || attempts >= 5) return;
+          setTimeout(poll, 2000);
+        } catch(_) {}
+      };
+      setTimeout(poll, 2000);
+    }
+  }, [idToken]);
+
+  // ── Auth actions ─────────────────────────────────────────────────────────
+  const signInWithGoogle = async () => {
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, provider);
+      // onAuthStateChanged handles the rest
+    } catch(e) {
+      if (e.code !== "auth/popup-closed-by-user") {
+        setAuthError("Sign-in failed. Please try again.");
+      }
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut(auth);
+    setImages([]);
+    setSessionUsed(0);
+    setManualChecks({});
+  };
+
+  // ── Derived values from profile (with safe fallbacks) ────────────────────
+  const tierCfg        = getTierConfig(profile?.tier);
+  const model          = tierCfg.model;
+  const limit          = tierCfg.analysisLimit;
+  const serverUsed     = profile?.analysisCount ?? 0;
+  const limitRemaining = Math.max(0, limit - serverUsed - sessionUsed);
+  const usagePct       = Math.min(100, (serverUsed + sessionUsed) / limit * 100);
+
 
   // ── APPLY POST-ANALYSIS FILTERS ──────────────────────────────────────────
   // Build display list: enforce quality gate + per-species cap on analyzed images
@@ -1115,11 +1210,11 @@ export default function AvianLens() {
         if (!b64) throw new Error("Could not read image data — please re-upload");
         let analysis;
         try {
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate, skipSpecies);
+          analysis = await analyzeImage(b64, img.type, location, model, idToken, [], "", setProgressMsg, obsDate, skipSpecies);
         } catch(e1) {
           if (cancelRef.current) break;
           await new Promise(r => setTimeout(r, 1500));
-          analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], "", setProgressMsg, obsDate, skipSpecies);
+          analysis = await analyzeImage(b64, img.type, location, model, idToken, [], "", setProgressMsg, obsDate, skipSpecies);
         }
         if (cancelRef.current) break;
         localImages = [...localImages];
@@ -1150,10 +1245,10 @@ export default function AvianLens() {
       if (!b64) throw new Error("Could not read image data");
       let analysis;
       try {
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg, obsDate);
+        analysis = await analyzeImage(b64, img.type, location, model, idToken, [], hint, setProgressMsg, obsDate);
       } catch(e1) {
         await new Promise(r => setTimeout(r, 1500));
-        analysis = await analyzeImage(b64, img.type, location, model, apiKey, [], hint, setProgressMsg, obsDate);
+        analysis = await analyzeImage(b64, img.type, location, model, idToken, [], hint, setProgressMsg, obsDate);
       }
       analysis._correctionHint = hint;
       const updatedImages = [...images];
@@ -1267,44 +1362,19 @@ export default function AvianLens() {
       <div className="app">
 
         {/* ════════════ LANDING ════════════ */}
-        {page === "landing" && (
+        {/* ════════════ LOADING (Firebase resolving session) ════════════ */}
+        {authLoading && (
+          <div className="auth-splash">
+            <div className="spin" style={{width:32,height:32,borderTopColor:"#C8A84B",borderColor:"rgba(200,168,75,.2)",margin:"0 auto 16px"}}/>
+            <div style={{color:"#8FAF8A",fontSize:".85rem"}}>Loading…</div>
+          </div>
+        )}
+
+        {/* ════════════ LANDING ════════════ */}
+        {!authLoading && page === "landing" && (
           <div className="land">
             <div className="hero">
-              <span className="bird-float" role="img" aria-label="hummingbird">
-                <svg viewBox="0 0 120 120" width="110" height="110" style={{display:"inline-block"}}>
-                  {/* Body */}
-                  <ellipse cx="60" cy="68" rx="22" ry="12" fill="#1A9E7A" opacity="0.95"/>
-                  {/* Iridescent throat */}
-                  <ellipse cx="60" cy="62" rx="10" ry="7" fill="#E8326A"/>
-                  <ellipse cx="60" cy="61" rx="7" ry="5" fill="#FF6B9D" opacity="0.6"/>
-                  {/* Head */}
-                  <circle cx="60" cy="52" r="11" fill="#0F7A5E"/>
-                  {/* Eye */}
-                  <circle cx="64" cy="50" r="3.5" fill="#000"/>
-                  <circle cx="64" cy="50" r="1.5" fill="#fff"/>
-                  <circle cx="65" cy="49" r="0.8" fill="#fff" opacity="0.8"/>
-                  {/* Beak */}
-                  <path d="M71 51 Q95 48 98 47" stroke="#6B4226" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
-                  {/* Tail */}
-                  <path d="M38 70 Q20 85 16 90" stroke="#0D6B4F" strokeWidth="5" fill="none" strokeLinecap="round"/>
-                  <path d="M40 72 Q22 88 20 95" stroke="#0F7A5E" strokeWidth="3" fill="none" strokeLinecap="round"/>
-                  <path d="M42 73 Q28 90 28 97" stroke="#1A9E7A" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
-                  {/* Wing top */}
-                  <ellipse cx="58" cy="58" rx="28" ry="9" fill="#52C4A0" opacity="0.85" transform="rotate(-20 58 58)"/>
-                  {/* Wing shimmer */}
-                  <ellipse cx="55" cy="54" rx="18" ry="5" fill="#90EED8" opacity="0.5" transform="rotate(-22 55 54)"/>
-                  {/* Belly */}
-                  <ellipse cx="58" cy="74" rx="14" ry="7" fill="#C8F0E0" opacity="0.55"/>
-                  {/* Feet */}
-                  <path d="M54 79 Q52 86 50 88" stroke="#3A2A1A" strokeWidth="1.5" fill="none"/>
-                  <path d="M58 80 Q57 87 55 89" stroke="#3A2A1A" strokeWidth="1.5" fill="none"/>
-                  {/* Sparkle dots */}
-                  <circle cx="85" cy="35" r="2.5" fill="#FFD700" opacity="0.8"/>
-                  <circle cx="30" cy="30" r="1.8" fill="#FF6B9D" opacity="0.7"/>
-                  <circle cx="95" cy="60" r="1.5" fill="#52C4A0" opacity="0.6"/>
-                  <circle cx="20" cy="55" r="2" fill="#FFD700" opacity="0.5"/>
-                </svg>
-              </span>
+              <span className="bird-float">🦅</span>
               <h1 className="app-title">Avian <em>Lens</em></h1>
               <p className="tagline">AI-Powered Bird Photography Analysis & Species Identification</p>
               <div className="pills">
@@ -1312,125 +1382,77 @@ export default function AvianLens() {
                   <span key={f} className="pill">{f}</span>
                 ))}
               </div>
-            </div>
-            {/* WHO IT HELPS */}
-            <div className="who">
-              <div className="who-title">Built for Every Bird Lover</div>
-              <div className="who-sub">From your first sighting to your thousandth — Avian Lens grows with you</div>
-              <div className="who-grid">
-                <div className="who-card">
-                  <span className="who-ico">🌱</span>
-                  <div className="who-name">Beginner Birders</div>
-                  <div className="who-role">Just starting out</div>
-                  <div className="who-desc">
-                    Not sure what bird you photographed? Our AI instantly identifies species and gives you fascinating facts — turning every mystery bird into a learning moment. No ornithology degree required.
-                  </div>
-                  <div className="who-tags">
-                    <span className="who-tag">Species ID</span>
-                    <span className="who-tag">Fun Facts</span>
-                    <span className="who-tag">Easy to use</span>
-                  </div>
-                </div>
-                <div className="who-card">
-                  <span className="who-ico">📷</span>
-                  <div className="who-name">Photography Enthusiasts</div>
-                  <div className="who-role">Growing their craft</div>
-                  <div className="who-desc">
-                    Get a detailed critique of every shot — lighting, composition, focus, and behavior — with specific tips to improve your technique. Know exactly which photos are share-worthy and why.
-                  </div>
-                  <div className="who-tags">
-                    <span className="who-tag">Quality Scoring</span>
-                    <span className="who-tag">Photographer Tips</span>
-                    <span className="who-tag">EXIF Analysis</span>
-                  </div>
-                </div>
-                <div className="who-card">
-                  <span className="who-ico">🏆</span>
-                  <div className="who-name">Experienced Birders</div>
-                  <div className="who-role">Serious observers</div>
-                  <div className="who-desc">
-                    Batch-analyze field sessions, apply smart quality gates, cap per-species counts, and export your best shots directly to Google Photos, Instagram, and Facebook — all tagged with species data.
-                  </div>
-                  <div className="who-tags">
-                    <span className="who-tag">Batch Analysis</span>
-                    <span className="who-tag">Smart Filters</span>
-                    <span className="who-tag">Social Export</span>
-                  </div>
-                </div>
+
+              {/* Google Sign-In */}
+              <div className="signin-box">
+                <button className="google-signin-btn" onClick={signInWithGoogle}>
+                  <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z"/></svg>
+                  Continue with Google
+                </button>
+                {authError && <div className="auth-err">{authError}</div>}
+                <p className="signin-note">Free plan starts immediately · No credit card required</p>
               </div>
             </div>
 
-                        <div className="p-row">
-              <div className="pc" onClick={()=>{setTier("free");setPage("workspace");}}>
-                <div className="t-name">Explorer</div>
-                <div className="t-price">Free</div>
-                <div className="mc-chip">⚡ ${tier==="paid"?"claude-sonnet-4-6":"claude-haiku-4-5"}</div>
-
-                <ul className="t-feats">
-                  <li>{FREE_LIMIT} images per session</li>
-                  <li>Species identification</li>
-                  <li>Quality score 1–10</li>
-                  <li>EXIF metadata extraction</li>
-                  <li>Photographer tips</li>
-                  <li>Pre-upload quality & species filters</li>
-                </ul>
-                <button className="btn btn-outline">Start Free →</button>
-              </div>
-              <div className="pc hot" onClick={()=>{setTier("paid");setPage("workspace");}}>
-                <div className="t-name">Ornithologist Pro</div>
-                <div className="t-price">$10 <small>/mo</small></div>
-                <div className="mc-chip pro">⚡ Haiku vision · 🚀 Sonnet ID</div>
-                <ul className="t-feats">
-                  <li>{PAID_LIMIT} images per batch</li>
-                  <li>Advanced species analysis</li>
-                  <li>Behavior & plumage details</li>
-                  <li>Conservation status</li>
-                  <li>Social media export</li>
-                  <li>Smart quality gate filtering</li>
-                </ul>
-                <button className="btn btn-gold">Upgrade to Pro →</button>
-              </div>
+            {/* Plan cards */}
+            <div className="p-row">
+              {Object.values(TIER_CONFIG).map(tc => (
+                <div key={tc.id} className={`pc${tc.highlighted?" hot":""}`} onClick={signInWithGoogle}>
+                  <div className="t-name">{tc.name}</div>
+                  <div className="t-price">
+                    {tc.price === 0 ? "Free" : <>{tc.priceLabel}</>}
+                  </div>
+                  <div className={`mc-chip${tc.highlighted?" pro":""}`}>⚡ {tc.modelLabel}</div>
+                  <ul className="t-feats">
+                    {tc.features.map(f => <li key={f}>{f}</li>)}
+                  </ul>
+                  <button className={`btn ${tc.highlighted?"btn-gold":"btn-outline"}`}>{tc.cta}</button>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
         {/* ════════════ WORKSPACE ════════════ */}
-        {page === "workspace" && (
+        {authUser && page === "workspace" && (
           <>
             {/* Header */}
             <div className="hdr">
-              <div className="brand" onClick={()=>{setPage("landing");setImages([]);setSessionUsed(0);}}>
-                <span>🐦</span> Avian <em>Lens</em>
+              <div className="brand" onClick={()=>{setImages([]);setSessionUsed(0);}}>
+                <span>🦅</span> Avian <em>Lens</em>
               </div>
               <div className="hdr-r">
+                {/* Usage bar */}
                 <div className="ubar">
                   <div className="utrack">
                     <div className="ufill" style={{width:`${usagePct}%`, background:limitRemaining>0?"#4CAF50":"#F44336"}}/>
                   </div>
-                  <span>{limitRemaining} left</span>
+                  <span style={{fontSize:".68rem",color:"#8FAF8A"}}>{serverUsed}/{limit}</span>
                 </div>
-                <div className={`tc ${tier==="paid"?"tc-paid":"tc-free"}`}>{tier==="paid"?"✦ Pro":"Explorer"}</div>
-                {tier==="free" && (
+                {/* Tier chip */}
+                <div className={`tc ${profile?.tier==="starter"?"tc-paid":"tc-free"}`}>
+                  {profile?.tier==="starter" ? "✦ Starter" : "Free"}
+                </div>
+                {/* Upgrade button — free users only */}
+                {profile?.tier !== "starter" && (
                   <button className="btn btn-outline" style={{width:"auto",padding:"4px 11px",fontSize:".67rem"}} onClick={()=>setShowUpgrade(true)}>Upgrade ↑</button>
                 )}
+                {/* User avatar + sign out */}
+                {authUser && (
+                  <div className="user-menu">
+                    {authUser.photoURL
+                      ? <img src={authUser.photoURL} className="user-avatar" alt="avatar" referrerPolicy="no-referrer"/>
+                      : <div className="user-avatar user-avatar-initials">{(authUser.displayName||"?")[0]}</div>
+                    }
+                    <div className="user-dropdown">
+                      <div className="user-name">{authUser.displayName || authUser.email}</div>
+                      <div className="user-email">{authUser.email}</div>
+                      <hr style={{border:"none",borderTop:"1px solid rgba(100,150,100,.15)",margin:"6px 0"}}/>
+                      <button className="signout-btn" onClick={handleSignOut}>Sign out</button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-
-            {/* API key bar — only needed on GitHub Pages, hidden on Vercel */}
-            <div className="apibar">
-              <span className="apibar-lbl">🔑 API Key</span>
-              <input
-                className="apibar-inp"
-                type="password"
-                placeholder="sk-ant-... (required on GitHub Pages)"
-                value={apiKey}
-                onChange={e => {
-                  setApiKey(e.target.value);
-                  sessionStorage.setItem("avian_api_key", e.target.value);
-                }}
-              />
-              {apiKey && <span className="apibar-ok">✓ Key saved for session</span>}
-              <a className="apibar-link" href="https://console.anthropic.com" target="_blank" rel="noreferrer">Get key →</a>
             </div>
 
             <div className="ws">
@@ -1544,7 +1566,7 @@ export default function AvianLens() {
                 {/* ═══ DROP ZONE (bulk only) ═══ */}
                 <div className="drop-area">
                   {limitRemaining <= 0 && (
-                    <div className="warn" style={{marginBottom:10}}>⚠️ {tier==="free"?`Session limit (${FREE_LIMIT}) reached`:`Batch limit (${PAID_LIMIT}) reached`}</div>
+                    <div className="warn" style={{marginBottom:10}}>⚠️ {`Monthly limit (${limit}) reached — ${limitRemaining === 0 ? "upgrade for more" : "please wait for reset"}`}</div>
                   )}
                   <div
                     className={`drop${dragOver?" ov":""}${limitRemaining<=0?" disabled":""}`}
@@ -1692,7 +1714,7 @@ export default function AvianLens() {
                   {isAnalyzing && (
                     <div style={{marginBottom:8}}>
                       <div style={{fontSize:".67rem",color:"#8FAF8A",marginBottom:4}}>
-                        {progressMsg || `Analyzing image ${curIdx+1} of ${images.filter(i=>!i.analysis).length}`} · {tier==="paid"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}
+                        {progressMsg || `Analyzing image ${curIdx+1} of ${images.filter(i=>!i.analysis).length}`} · {profile?.tier==="starter"?"Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}
                       </div>
                       <div className="pbr"><div className="pbf"/></div>
                     </div>
@@ -1728,7 +1750,7 @@ export default function AvianLens() {
                       ? "Upload multiple images above to begin"
                       : isAnalyzing
                         ? `Click Stop to halt after the current image finishes`
-                        : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${tier==="paid"?"Haiku vision + Sonnet ID 🚀":"Haiku 4.5 ⚡"}`}
+                        : `Quality gate ≥${minQuality} · Max ${maxPerSpecies===10?"∞":maxPerSpecies}/species · ${profile?.tier==="starter"?"Haiku vision + Sonnet ID 🚀":"Haiku 4.5 ⚡"}`}
                   </div>
                 </div>
 
@@ -1800,7 +1822,7 @@ export default function AvianLens() {
                     <div style={{fontSize:".95rem",maxWidth:280,lineHeight:1.65,textAlign:"center",color:"rgba(143,175,138,.45)"}}>
                       Set your quality gate and species limit, then drop multiple bird photos to upload and analyze.
                     </div>
-                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ ${tier==="paid"?"claude-sonnet-4-6":"claude-haiku-4-5"}</div>
+                    <div style={{marginTop:10,fontSize:".8rem",color:"rgba(143,175,138,.28)"}}>⚡ {tierCfg.modelLabel}</div>
                   </div>
                 ) : selImg ? (
                   <div>
@@ -1828,7 +1850,7 @@ export default function AvianLens() {
                     {curIdx === selIdx && (
                       <div style={{textAlign:"center",padding:"60px 20px",color:"#8FAF8A"}}>
                         <div className="spin" style={{width:36,height:36,margin:"0 auto 14px"}}/>
-                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {tier==="paid"?"Haiku + Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem"}}>Analyzing with {profile?.tier==="starter"?"Haiku + Sonnet 4.6 🚀":"Haiku 4.5 ⚡"}…</div>
                         <div style={{fontSize:".7rem",color:"rgba(143,175,138,.5)",marginTop:4}}>{progressMsg || "Pass 1 → eBird → Pass 2…"}</div>
                       </div>
                     )}
@@ -2067,14 +2089,37 @@ export default function AvianLens() {
           <div className="mbg" onClick={()=>setShowUpgrade(false)}>
             <div className="modal" onClick={e=>e.stopPropagation()}>
               <button className="mclose" onClick={()=>setShowUpgrade(false)}>✕</button>
-              <div style={{fontSize:"2.6rem",marginBottom:12}}>🐦</div>
-              <div className="m-title">Upgrade to Pro</div>
-              <div className="m-desc">{tier==="free"?`Free plan allows ${FREE_LIMIT} images. Upgrade for ${PAID_LIMIT} per batch with Claude Sonnet's deeper analysis and social export.`:"Unlock Avian Lens Pro."}</div>
-              <div className="upbox">
-                <div className="upbox-price">$10 <span style={{fontSize:".88rem",fontWeight:400,color:"#8FAF8A"}}>/month</span></div>
-                <div className="upbox-detail">{PAID_LIMIT} images · Haiku vision + Sonnet 4.6 ID · Social Export</div>
+              <div style={{fontSize:"2.6rem",marginBottom:12}}>🦅</div>
+              <div className="m-title">Upgrade to Starter</div>
+              <div className="m-desc">
+                You're on the Free plan ({TIER_CONFIG.free.analysisLimit} analyses/month).
+                Starter gives you {TIER_CONFIG.starter.analysisLimit} analyses, Sonnet 4.6 accuracy, and social export.
               </div>
-              <button className="btn btn-gold" style={{marginBottom:8}} onClick={()=>{setTier("paid");setSessionUsed(0);setImages([]);setShowUpgrade(false);}}>Upgrade Now →</button>
+              <div className="upbox">
+                <div className="upbox-price">{TIER_CONFIG.starter.priceLabel}</div>
+                <div className="upbox-detail">
+                  {TIER_CONFIG.starter.analysisLimit} analyses · {TIER_CONFIG.starter.modelLabel} · Cancel anytime
+                </div>
+              </div>
+              <button className="btn btn-gold" style={{marginBottom:8}} onClick={async () => {
+                try {
+                  const resp = await fetch("/api/create-checkout-session", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type":  "application/json",
+                      "Authorization": `Bearer ${idToken}`,
+                    },
+                    body: JSON.stringify({ origin: window.location.origin }),
+                  });
+                  const data = await resp.json();
+                  if (data.url) window.location.href = data.url;
+                  else alert(data.error || "Could not start checkout");
+                } catch(e) {
+                  alert("Checkout failed — please try again");
+                }
+              }}>
+                Upgrade to Starter →
+              </button>
               <button className="btn btn-ghost" onClick={()=>setShowUpgrade(false)}>Continue free</button>
             </div>
           </div>

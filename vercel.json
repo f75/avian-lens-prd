@@ -3,8 +3,11 @@
   "buildCommand": null,
   "outputDirectory": "dist",
   "functions": {
-    "api/analyze.js": { "maxDuration": 60 },
-    "api/ebird.js":   { "maxDuration": 10 }
+    "api/analyze.js":                 { "maxDuration": 60 },
+    "api/ebird.js":                   { "maxDuration": 10 },
+    "api/create-checkout-session.js": { "maxDuration": 15 },
+    "api/stripe-webhook.js":          { "maxDuration": 15 },
+    "api/user-profile.js":            { "maxDuration": 10 }
   },
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
