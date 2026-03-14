@@ -970,6 +970,8 @@ export default function AvianLens() {
   const [authLoading, setAuthLoading] = useState(true);   // true while Firebase resolves session
   const [authError,   setAuthError]   = useState(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  // Capture ?checkout=success before Firebase wipes the URL
+  const checkoutStatusRef = useRef(() => new URLSearchParams(window.location.search).get('checkout'))();
 
   const [page,        setPage]        = useState("landing");
   const [sessionUsed, setSessionUsed] = useState(0);
@@ -1049,25 +1051,31 @@ export default function AvianLens() {
   };
 
   // ── Handle ?checkout=success redirect from Stripe ─────────────────────────
+  // checkoutStatusRef captures the param immediately on mount (before Firebase
+  // resolves and before we wipe the URL), so the poll fires correctly once
+  // idToken becomes available.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const status = params.get("checkout");
-    if (!status) return;
-    // Clean URL without reload
-    window.history.replaceState({}, "", window.location.pathname);
-    if (status === "success" && idToken) {
-      // Stripe webhook may need a moment — poll profile up to 5× with 2s gaps
-      let attempts = 0;
-      const poll = async () => {
-        attempts++;
-        try {
-          const data = await loadProfile(idToken);
-          if (data.tier === "starter" || attempts >= 5) return;
-          setTimeout(poll, 2000);
-        } catch(_) {}
-      };
-      setTimeout(poll, 2000);
+    // Always clean the URL on first run regardless of auth state
+    if (window.location.search.includes('checkout')) {
+      window.history.replaceState({}, '', window.location.pathname);
     }
+  }, []);
+
+  useEffect(() => {
+    if (checkoutStatusRef !== 'success' || !idToken) return;
+    // Stripe webhook may need a moment to fire — poll up to 8× with 2s gaps
+    let attempts = 0;
+    const poll = async () => {
+      attempts++;
+      try {
+        const data = await loadProfile(idToken);
+        if (data.tier === 'starter') return; // upgraded — done
+        if (attempts < 8) setTimeout(poll, 2000);
+      } catch(_) {
+        if (attempts < 8) setTimeout(poll, 2000);
+      }
+    };
+    setTimeout(poll, 1500); // first check after 1.5s
   }, [idToken]);
 
   // ── Auth actions ─────────────────────────────────────────────────────────

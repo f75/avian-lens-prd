@@ -63,6 +63,21 @@ export default async function handler(req, res) {
 
     switch (event.type) {
 
+      // checkout.session.completed fires immediately on payment — most reliable
+      // source of firebaseUid since it's on the session we created
+      case "checkout.session.completed": {
+        const uid = obj.metadata?.firebaseUid;
+        if (!uid) { console.warn("No firebaseUid in checkout session metadata"); break; }
+        if (obj.payment_status === "paid") {
+          await setUserTier(uid, {
+            tier:             "starter",
+            stripeCustomerId: obj.customer,
+          });
+          console.log(`✅ Upgraded ${uid} to starter via checkout.session.completed`);
+        }
+        break;
+      }
+
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const uid = obj.metadata?.firebaseUid;
