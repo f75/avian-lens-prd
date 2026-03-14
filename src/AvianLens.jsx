@@ -1007,7 +1007,7 @@ export default function AvianLens() {
           await loadProfile(token);
           setPage("workspace");
         } catch(e) {
-          setAuthError("Could not load profile. Please try again.");
+          setAuthError(e.message || "Could not load profile. Please try again.");
         }
       } else {
         setAuthUser(null);
@@ -1037,8 +1037,8 @@ export default function AvianLens() {
     const resp = await fetch("/api/user-profile", {
       headers: { "Authorization": `Bearer ${token}` },
     });
-    if (!resp.ok) throw new Error("Profile load failed");
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `Profile load failed (${resp.status})`);
     setProfile(data);
     return data;
   };

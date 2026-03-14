@@ -26,8 +26,9 @@ export default async function handler(req, res) {
     let decoded;
     try {
       decoded = await verifyIdToken(req.headers.authorization);
-    } catch {
-      return res.status(401).json({ error: "Unauthorised" });
+    } catch(e) {
+      console.error("user-profile auth error:", e.message);
+      return res.status(401).json({ error: `Auth failed: ${e.message}` });
     }
 
     // ── Get or create user doc ───────────────────────────────────────────────
@@ -55,6 +56,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error("user-profile error:", err);
-    return res.status(500).json({ error: "Could not load profile" });
+    return res.status(500).json({ error: err.message || "Could not load profile" });
   }
 }
