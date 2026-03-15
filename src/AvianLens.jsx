@@ -910,6 +910,26 @@ body{background:#060f07;}
 .dash-bot{display:none;}
 .dash-col{display:flex;flex-direction:column;gap:8px;}
 
+/* ── COUPON DOCK ── */
+.coupon-dock{padding:0 16px 10px;}
+.coupon-toggle{width:100%;padding:8px;background:transparent;border:1px dashed rgba(200,168,75,.22);border-radius:8px;color:rgba(200,168,75,.55);font-family:'DM Sans',sans-serif;font-size:.75rem;cursor:pointer;transition:all .2s;text-align:center;}
+.coupon-toggle:hover{border-color:rgba(200,168,75,.45);color:#C8A84B;background:rgba(200,168,75,.05);}
+.coupon-box{background:rgba(18,32,18,.7);border:1px solid rgba(200,168,75,.22);border-radius:10px;padding:11px 12px;}
+.coupon-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
+.coupon-close{background:none;border:none;color:rgba(143,175,138,.45);cursor:pointer;font-size:.8rem;padding:2px 4px;line-height:1;}
+.coupon-close:hover{color:#8FAF8A;}
+.coupon-row{display:flex;gap:7px;}
+.coupon-inp{flex:1;background:rgba(10,22,10,.6);border:1px solid rgba(200,168,75,.25);border-radius:6px;padding:7px 10px;color:#EDE8D8;font-family:'DM Sans',sans-serif;font-size:.82rem;font-weight:600;letter-spacing:.08em;outline:none;transition:border-color .2s;}
+.coupon-inp:focus{border-color:rgba(200,168,75,.5);}
+.coupon-inp::placeholder{color:rgba(200,168,75,.2);font-weight:400;letter-spacing:0;}
+.coupon-apply{padding:7px 14px;background:#C8A84B;border:none;border-radius:6px;color:#060f07;font-family:'DM Sans',sans-serif;font-size:.78rem;font-weight:700;cursor:pointer;transition:all .18s;display:flex;align-items:center;justify-content:center;min-width:58px;}
+.coupon-apply:hover:not(:disabled){background:#D4B95E;}
+.coupon-apply:disabled{opacity:.38;cursor:not-allowed;}
+.coupon-apply.loading{background:rgba(200,168,75,.6);}
+.coupon-msg{margin-top:7px;padding:6px 9px;border-radius:6px;font-size:.74rem;line-height:1.4;}
+.coupon-msg.ok{background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.22);color:#81C784;}
+.coupon-msg.err{background:rgba(244,67,54,.07);border:1px solid rgba(244,67,54,.22);color:#EF9A9A;}
+
 /* SOCIAL DOCK (left panel) */
 .share-dock{padding:0 16px 14px;border-top:1px solid rgba(100,150,100,.1);}
 .share-dock-inner{background:rgba(18,32,18,.7);border:1px solid rgba(100,150,100,.18);border-radius:10px;padding:12px 13px;}
@@ -969,7 +989,11 @@ export default function AvianLens() {
   const [profile,     setProfile]     = useState(null);   // { tier, analysisCount, analysisLimit, ... }
   const [authLoading, setAuthLoading] = useState(true);   // true while Firebase resolves session
   const [authError,   setAuthError]   = useState(null);
-  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showUserMenu,  setShowUserMenu]  = useState(false);
+  const [couponCode,    setCouponCode]    = useState("");
+  const [couponOpen,    setCouponOpen]    = useState(false);
+  const [couponStatus,  setCouponStatus]  = useState(null); // { ok, message }
+  const [couponLoading, setCouponLoading] = useState(false);
   // Capture ?checkout=success immediately (before Firebase resolves and before URL is cleaned)
   const checkoutStatusRef = useRef(new URLSearchParams(window.location.search).get('checkout'));
 
@@ -1048,6 +1072,36 @@ export default function AvianLens() {
     if (!resp.ok) throw new Error(data.error || `Profile load failed (${resp.status})`);
     setProfile(data);
     return data;
+  };
+
+  // ── Redeem coupon code ───────────────────────────────────────────────────
+  const redeemCoupon = async () => {
+    if (!couponCode.trim() || couponLoading) return;
+    setCouponLoading(true);
+    setCouponStatus(null);
+    try {
+      const resp = await fetch("/api/redeem-coupon", {
+        method: "POST",
+        headers: {
+          "Content-Type":  "application/json",
+          "Authorization": `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ code: couponCode.trim() }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setCouponStatus({ ok: false, message: data.error || "Invalid coupon" });
+      } else {
+        setCouponStatus({ ok: true, message: data.message });
+        setCouponCode("");
+        // Reload profile so usage counter updates immediately
+        await loadProfile(idToken);
+      }
+    } catch {
+      setCouponStatus({ ok: false, message: "Could not apply coupon. Please try again." });
+    } finally {
+      setCouponLoading(false);
+    }
   };
 
   // ── Handle ?checkout=success redirect from Stripe ─────────────────────────
@@ -1774,6 +1828,44 @@ export default function AvianLens() {
                 </div>
 
                 {/* ═══ SHARE & EXPORT DOCK ═══ */}
+                {/* ═══ COUPON CODE ═══ */}
+                <div className="coupon-dock">
+                  {!couponOpen ? (
+                    <button className="coupon-toggle" onClick={() => { setCouponOpen(true); setCouponStatus(null); }}>
+                      🎟 Have a coupon code?
+                    </button>
+                  ) : (
+                    <div className="coupon-box">
+                      <div className="coupon-header">
+                        <span style={{fontSize:".72rem",fontWeight:700,color:"#BAD0BA",letterSpacing:".06em"}}>🎟 COUPON CODE</span>
+                        <button className="coupon-close" onClick={() => { setCouponOpen(false); setCouponStatus(null); setCouponCode(""); }}>✕</button>
+                      </div>
+                      <div className="coupon-row">
+                        <input
+                          className="coupon-inp"
+                          placeholder="Enter code e.g. BIRD50"
+                          value={couponCode}
+                          autoFocus
+                          onChange={e => { setCouponCode(e.target.value.toUpperCase()); setCouponStatus(null); }}
+                          onKeyDown={e => { if (e.key === "Enter") redeemCoupon(); if (e.key === "Escape") { setCouponOpen(false); setCouponCode(""); } }}
+                        />
+                        <button
+                          className={`coupon-apply${couponLoading ? " loading" : ""}`}
+                          disabled={!couponCode.trim() || couponLoading}
+                          onClick={redeemCoupon}
+                        >
+                          {couponLoading ? <div className="spin" style={{width:12,height:12,borderTopColor:"#060f07",borderColor:"rgba(6,15,7,.3)"}}/> : "Apply"}
+                        </button>
+                      </div>
+                      {couponStatus && (
+                        <div className={`coupon-msg${couponStatus.ok ? " ok" : " err"}`}>
+                          {couponStatus.ok ? "✓ " : "⚠ "}{couponStatus.message}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="share-dock">
                   <div className="share-dock-inner">
                     <div className="share-title">

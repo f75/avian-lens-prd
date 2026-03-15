@@ -7,7 +7,8 @@
     "api/ebird.js":                   { "maxDuration": 10 },
     "api/create-checkout-session.js": { "maxDuration": 15 },
     "api/stripe-webhook.js":          { "maxDuration": 15 },
-    "api/user-profile.js":            { "maxDuration": 10 }
+    "api/user-profile.js":            { "maxDuration": 10 },
+    "api/redeem-coupon.js":           { "maxDuration": 10 }
   },
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
