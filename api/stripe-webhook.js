@@ -1,46 +1,43 @@
 // api/stripe-webhook.js
-// ─────────────────────────────────────────────────────────────────────────────
-// Receives Stripe webhook events and keeps Firestore in sync.
-// Must be registered in Stripe Dashboard → Webhooks with these events:
-//   customer.subscription.created
-//   customer.subscription.updated
-//   customer.subscription.deleted
-//   invoice.payment_failed
-// ─────────────────────────────────────────────────────────────────────────────
-
 import Stripe from "stripe";
 import { setUserTier, downgradeUser } from "./firestoreUser.js";
+import { getDb } from "./firebaseAdmin.js";
 
-// Vercel serverless: disable body parsing so we can read the raw buffer
-// needed for Stripe signature verification
 export const config = { api: { bodyParser: false } };
 
-// Read raw body — works whether Vercel parsed it or not
+// Stream raw bytes — critical for Stripe signature verification
 function getRawBody(req) {
-  // If Vercel already parsed the body, reconstruct it
-  if (req.body) {
-    const raw = typeof req.body === "string"
-      ? req.body
-      : JSON.stringify(req.body);
-    return Promise.resolve(Buffer.from(raw));
-  }
-  // Otherwise stream it
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", c => chunks.push(typeof c === "string" ? Buffer.from(c) : c));
+    req.on("data", chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     req.on("end",  () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
 
+// Look up firebaseUid by stripeCustomerId — fallback when metadata is missing
+async function uidFromCustomerId(customerId) {
+  try {
+    const db = getDb();
+    const snap = await db.collection("users")
+      .where("stripeCustomerId", "==", customerId)
+      .limit(1)
+      .get();
+    if (!snap.empty) return snap.docs[0].id;
+  } catch(e) {
+    console.error("uidFromCustomerId error:", e.message);
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
-  const secretKey    = process.env.STRIPE_SECRET_KEY;
+  const secretKey     = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!secretKey || !webhookSecret) {
-    console.error("Stripe env vars not set");
+    console.error("❌ Stripe env vars missing");
     return res.status(500).end();
   }
 
@@ -51,48 +48,51 @@ export default async function handler(req, res) {
   try {
     const rawBody = await getRawBody(req);
     const sig     = req.headers["stripe-signature"];
+    console.log("Webhook received:", req.headers["stripe-signature"]?.slice(0, 30));
     event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    console.log("✅ Signature verified, event:", event.type);
   } catch (err) {
-    console.error("Webhook signature failed:", err.message);
+    console.error("❌ Signature failed:", err.message);
     return res.status(400).json({ error: `Webhook error: ${err.message}` });
   }
 
   // ── Handle events ─────────────────────────────────────────────────────────
   try {
     const obj = event.data.object;
+    console.log("Event object id:", obj.id, "| customer:", obj.customer);
 
     switch (event.type) {
 
-      // checkout.session.completed fires immediately on payment — most reliable
-      // source of firebaseUid since it's on the session we created
       case "checkout.session.completed": {
-        const uid = obj.metadata?.firebaseUid;
-        if (!uid) { console.warn("No firebaseUid in checkout session metadata"); break; }
+        console.log("checkout metadata:", JSON.stringify(obj.metadata));
+        console.log("payment_status:", obj.payment_status);
+        // Get uid from metadata, fallback to customer lookup
+        let uid = obj.metadata?.firebaseUid;
+        if (!uid && obj.customer) uid = await uidFromCustomerId(obj.customer);
+        if (!uid) { console.error("❌ Cannot resolve uid for customer:", obj.customer); break; }
         if (obj.payment_status === "paid") {
-          await setUserTier(uid, {
-            tier:             "starter",
-            stripeCustomerId: obj.customer,
-          });
-          console.log(`✅ Upgraded ${uid} to starter via checkout.session.completed`);
+          await setUserTier(uid, { tier: "starter", stripeCustomerId: obj.customer });
+          console.log(`✅ Upgraded ${uid} → starter (checkout.session.completed)`);
         }
         break;
       }
 
       case "customer.subscription.created":
       case "customer.subscription.updated": {
-        const uid = obj.metadata?.firebaseUid;
-        if (!uid) { console.warn("No firebaseUid in subscription metadata"); break; }
-
+        console.log("subscription metadata:", JSON.stringify(obj.metadata));
+        console.log("subscription status:", obj.status);
+        let uid = obj.metadata?.firebaseUid;
+        if (!uid && obj.customer) uid = await uidFromCustomerId(obj.customer);
+        if (!uid) { console.error("❌ Cannot resolve uid for customer:", obj.customer); break; }
         const isActive = ["active", "trialing"].includes(obj.status);
         if (isActive) {
           await setUserTier(uid, {
-            tier:                 "starter",
-            stripeCustomerId:     obj.customer,
+            tier: "starter",
+            stripeCustomerId: obj.customer,
             stripeSubscriptionId: obj.id,
           });
-          console.log(`✅ Upgraded ${uid} to starter`);
+          console.log(`✅ Upgraded ${uid} → starter (${event.type})`);
         } else {
-          // Subscription exists but not active (past_due, etc.) — downgrade
           await downgradeUser(uid);
           console.log(`⬇️ Downgraded ${uid} (status: ${obj.status})`);
         }
@@ -100,30 +100,28 @@ export default async function handler(req, res) {
       }
 
       case "customer.subscription.deleted": {
-        const uid = obj.metadata?.firebaseUid;
-        if (!uid) { console.warn("No firebaseUid in subscription metadata"); break; }
+        let uid = obj.metadata?.firebaseUid;
+        if (!uid && obj.customer) uid = await uidFromCustomerId(obj.customer);
+        if (!uid) { console.error("❌ Cannot resolve uid for customer:", obj.customer); break; }
         await downgradeUser(uid);
         console.log(`⬇️ Subscription cancelled — downgraded ${uid}`);
         break;
       }
 
       case "invoice.payment_failed": {
-        // Optionally downgrade immediately on failure, or wait for subscription.updated
-        // We log it here but let Stripe retry — subscription.updated will fire when
-        // the grace period expires and status becomes "past_due" / "canceled"
         console.log("⚠️ Payment failed for customer:", obj.customer);
         break;
       }
 
       default:
-        // Ignore unhandled events
+        console.log("Unhandled event type:", event.type);
         break;
     }
 
     return res.status(200).json({ received: true });
 
   } catch (err) {
-    console.error("Webhook handler error:", err);
+    console.error("❌ Webhook handler error:", err);
     return res.status(500).json({ error: "Webhook handler failed" });
   }
 }
